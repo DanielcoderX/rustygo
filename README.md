@@ -1,4 +1,4 @@
-# rustygo
+# rustygo - **WIP**
 
 Low-level memory primitives for Go, with a zero-config default path.
 
