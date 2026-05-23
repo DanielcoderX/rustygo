@@ -13,6 +13,7 @@
 //   - You need very fast bulk allocation
 //   - Objects share the same lifetime
 //   - You can reset all allocations at once
+//   - You want OS-backed memory on supported targets instead of Go-heap backing
 //
 // Use Pool when:
 //   - Objects are reused frequently
@@ -30,6 +31,7 @@
 //
 // Rules:
 //   - Never use Arena allocations after Reset()
+//   - Call Arena.Close() or Region.Done() to release OS-backed arena memory promptly
 //   - Never Free the same pool object twice
 //   - Objects returned from Pool are NOT zeroed
 //   - GC is NEVER modified automatically

@@ -208,6 +208,86 @@ func TestArenaAllocAligned(t *testing.T) {
 	}
 }
 
+func TestScopeAllocValue(t *testing.T) {
+	type packet struct {
+		ID int
+	}
+
+	scope := rg.NewArena(64).EnterScope()
+	defer scope.Exit()
+
+	p := rg.AllocValue[packet](scope)
+	p.ID = 7
+	if p.ID != 7 {
+		t.Fatalf("expected stored value to round-trip, got %d", p.ID)
+	}
+}
+
+func TestScopeAllocSliceCap(t *testing.T) {
+	scope := rg.NewArena(128).EnterScope()
+	defer scope.Exit()
+
+	buf := rg.AllocSliceCap[uint32](scope, 2, 4)
+	if len(buf) != 2 || cap(buf) != 4 {
+		t.Fatalf("expected len=2 cap=4, got len=%d cap=%d", len(buf), cap(buf))
+	}
+	buf[0] = 11
+	buf[1] = 29
+	if buf[0] != 11 || buf[1] != 29 {
+		t.Fatalf("unexpected slice contents: %v", buf)
+	}
+}
+
+func TestArenaCloseIdempotent(t *testing.T) {
+	arena := rg.NewArena(64)
+	if err := arena.Close(); err != nil {
+		t.Fatalf("first close failed: %v", err)
+	}
+	if err := arena.Close(); err != nil {
+		t.Fatalf("second close failed: %v", err)
+	}
+}
+
+func TestRegionErgonomicAPI(t *testing.T) {
+	type packet struct {
+		ID int
+	}
+
+	r := rg.NewRegion(256)
+	defer func() {
+		if err := r.Done(); err != nil {
+			t.Fatalf("region close failed: %v", err)
+		}
+	}()
+
+	p := rg.New[packet](r)
+	p.ID = 42
+	buf := rg.Slice[byte](r, 32)
+	if len(buf) != 32 || cap(buf) != 32 {
+		t.Fatalf("expected len=cap=32, got len=%d cap=%d", len(buf), cap(buf))
+	}
+	if p.ID != 42 {
+		t.Fatalf("expected packet value to round-trip, got %d", p.ID)
+	}
+}
+
+func TestRegionReset(t *testing.T) {
+	r := rg.NewRegion(128)
+	defer func() {
+		if err := r.Done(); err != nil {
+			t.Fatalf("region close failed: %v", err)
+		}
+	}()
+
+	first := rg.Slice[byte](r, 16)
+	copy(first, []byte("before-reset"))
+	r.Reset()
+	second := rg.Slice[byte](r, 16)
+	if len(second) != 16 {
+		t.Fatalf("expected len=16 after reset, got %d", len(second))
+	}
+}
+
 func assertPanicsWith(t *testing.T, want string, fn func()) {
 	t.Helper()
 	defer func() {

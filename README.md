@@ -47,11 +47,23 @@ buf := rg.Borrow(4096)
 defer rg.Release(buf)
 ```
 
+For deterministic, zero-ceremony arena allocation:
+
+```go
+r := rg.NewRegion(64 * 1024)
+defer r.Done()
+
+node := rg.New[MyNode](r)
+buf := rg.Slice[byte](r, 4096)
+```
+
 ## Advanced Usage (Optional)
 
 Use advanced APIs only when you need deterministic control.
 
+- `Region`: one-line arena+scope lifecycle for the common single-lifetime case.
 - `Arena`: explicit bump allocation, `Mark/Rewind`, aligned allocation.
+- Typed scope helpers: `AllocValue[T](scope)`, `AllocSlice[T](scope, n)`, `AllocSliceCap[T](scope, len, cap)`.
 - `Pool`: backend tuning (`Treiber` vs `sync.Pool`), reset/poison/zero options.
 - GC lifecycle helpers: `WithGCDisabled`, `WithGCPercent`.
 
@@ -67,6 +79,12 @@ Use advanced APIs only when you need deterministic control.
 ### Why memory may not "drop" immediately
 
 This library focuses on reducing allocations and reusing memory. In Go, reused memory is often retained by the runtime and may not immediately reduce RSS/process memory.
+
+Arena backing is OS-managed on supported targets:
+
+- `linux`, `darwin`, `freebsd`: `mmap`
+- `windows`: `VirtualAlloc`
+- `js/wasm`, `wasip1`: heap-backed fallback
 
 ### What to observe
 
@@ -97,9 +115,38 @@ Detailed benchmark suite:
 
 ```bash
 go test ./rustygo_test/benchmarks -run ^$ -bench BenchmarkDetailed -benchmem
+go test ./rustygo_test/benchmarks -run ^$ -bench BenchmarkRequestBatchArenaVsHeap -benchmem
+```
+
+## Measured Results
+
+On `BenchmarkRequestBatchArenaVsHeap`, the arena path hit the headline result:
+`0 B/op` and `0 allocs/op`.
+
+Measured output on this machine:
+
+```text
+BenchmarkRequestBatchArenaVsHeap/Heap-16         	  804920	      1601 ns/op	    1776 B/op	      24 allocs/op
+BenchmarkRequestBatchArenaVsHeap/Arena-16        	 1000000	      1030 ns/op	       0 B/op	       0 allocs/op
+```
+
+Command used:
+
+```bash
+go test ./rustygo_test/benchmarks -run ^$ -bench BenchmarkRequestBatchArenaVsHeap -benchmem
+```
+
+## Compiler Pass Prototype
+
+This repo also includes a prototype compiler-wrapper pass in `compilerplugin/`.
+It is not a Go toolchain patch yet; it rewrites eligible allocations into a
+temporary module tree and then invokes `go build`.
+
+```bash
+go run ./compilerplugin/cmd/rustygoc build ./internal/compilerplugintest/basic
+go run ./compilerplugin/cmd/rustygoc build -arena-bytes=131072 ./...
 ```
 
 ## Test Layout
 
 See `rustygo_test/TEST_CLASSIFICATION.md` for categorized tests and benchmarks.
-
