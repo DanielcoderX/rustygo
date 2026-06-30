@@ -14,6 +14,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// If the first argument is an absolute path to a Go tool (like compile or link),
+	// this is being invoked via -toolexec.
+	if compilerplugin.IsToolExec(os.Args[1]) {
+		if err := compilerplugin.ToolExec(os.Args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	switch os.Args[1] {
 	case "build":
 		if err := runBuild(os.Args[2:]); err != nil {

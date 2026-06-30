@@ -241,3 +241,32 @@ func poisonObject[T any](obj *T, pattern byte) {
 		raw[i] = pattern
 	}
 }
+
+// -----------------------------
+// SyncPool Wrapper
+// -----------------------------
+
+// SyncPool provides an exact method mirror of sync.Pool but is backed by a rustygo.Pool.
+// It uses PoolBackendSync by default to mimic the same behavior.
+type SyncPool[T any] struct {
+	pool *Pool[T]
+}
+
+// NewSyncPoolWrapper creates a new SyncPool. It requires a newFn similar to sync.Pool.New.
+func NewSyncPoolWrapper[T any](newFn func() *T, opts ...PoolOption[T]) *SyncPool[T] {
+	return &SyncPool[T]{
+		pool: NewPool(newFn, append([]PoolOption[T]{WithPoolBackend[T](PoolBackendSync)}, opts...)...),
+	}
+}
+
+// Get selects an arbitrary item from the Pool, removes it from the Pool, and returns it to the caller.
+// It mirrors sync.Pool.Get.
+func (p *SyncPool[T]) Get() *T {
+	return p.pool.Alloc()
+}
+
+// Put adds x to the pool.
+// It mirrors sync.Pool.Put.
+func (p *SyncPool[T]) Put(x *T) {
+	p.pool.Free(x)
+}

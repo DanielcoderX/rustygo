@@ -80,10 +80,14 @@ func collectSites(file *ast.File, info *types.Info) []site {
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch fn := n.(type) {
 		case *ast.FuncDecl:
-			sites = append(sites, collectCandidates(fn.Body, info)...)
+			if fn.Body != nil {
+				sites = append(sites, collectCandidates(fn.Body, info)...)
+			}
 			return false
 		case *ast.FuncLit:
-			sites = append(sites, collectCandidates(fn.Body, info)...)
+			if fn.Body != nil {
+				sites = append(sites, collectCandidates(fn.Body, info)...)
+			}
 			return false
 		default:
 			return true
