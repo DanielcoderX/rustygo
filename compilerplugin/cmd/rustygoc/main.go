@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 
 	"rustygo/compilerplugin"
 )
@@ -38,8 +39,7 @@ func main() {
 
 func runBuild(args []string) error {
 	fs := flag.NewFlagSet("rustygoc build", flag.ContinueOnError)
-	arenaBytes := fs.Int("arena-bytes", 64*1024, "arena size inserted into rewritten functions")
-	keepWork := fs.Bool("work", false, "keep and print the temporary rewritten module directory")
+	arenaBytes := fs.Int("arena-bytes", 1024*1024, "arena size inserted into rewritten functions")
 	output := fs.String("o", "", "build output path")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -54,21 +54,22 @@ func runBuild(args []string) error {
 		buildArgs = append(buildArgs, "-o", *output)
 	}
 
-	result, err := compilerplugin.Build(compilerplugin.Config{
-		ArenaBytes: *arenaBytes,
-		Stdout:     os.Stdout,
-		Stderr:     os.Stderr,
-	}, patterns, buildArgs)
+	exePath, err := os.Executable()
 	if err != nil {
-		if result != nil && *keepWork {
-			fmt.Fprintf(os.Stderr, "work dir: %s\n", result.TempModuleRoot)
-		}
-		return err
+		return fmt.Errorf("failed to get executable path: %w", err)
 	}
 
-	fmt.Fprintf(os.Stdout, "rewrote %d file(s)\n", len(result.RewrittenFiles))
-	if *keepWork {
-		fmt.Fprintf(os.Stdout, "work dir: %s\n", result.TempModuleRoot)
+	args = append([]string{"build", "-toolexec=" + exePath}, buildArgs...)
+	args = append(args, patterns...)
+
+	cmd := exec.Command("go", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	cmd.Env = append(os.Environ(), fmt.Sprintf("RUSTYGO_ARENA_BYTES=%d", *arenaBytes))
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("go build failed: %w", err)
 	}
 	return nil
 }

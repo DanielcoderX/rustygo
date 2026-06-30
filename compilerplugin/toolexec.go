@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"rustygo/analyzer"
@@ -68,9 +69,15 @@ func ToolExec(args []string) error {
 	}
 	// We don't defer os.RemoveAll(tempDir) because the compile command might be run later or fail
 	// Usually toolexec wrappers can clean up, but let's keep it simple or defer and wait.
-	defer os.RemoveAll(tempDir)
+	// defer os.RemoveAll(tempDir)
 
-	rewriteCfg := analyzer.RewriteConfig{ArenaBytes: 256 * 1024}
+	arenaBytes := 256 * 1024
+	if env := os.Getenv("RUSTYGO_ARENA_BYTES"); env != "" {
+		if v, err := strconv.Atoi(env); err == nil && v > 0 {
+			arenaBytes = v
+		}
+	}
+	rewriteCfg := analyzer.RewriteConfig{ArenaBytes: arenaBytes}
 
 	// We need type information to do safe rewrites.
 	// Since we are running on isolated files from the command line, we can load them as a package.

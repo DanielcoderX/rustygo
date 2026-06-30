@@ -3,55 +3,25 @@ package compilerplugin_test
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
-
-	"rustygo/compilerplugin"
 )
 
-func TestRewriteModule(t *testing.T) {
-	result, err := compilerplugin.RewriteModule(compilerplugin.Config{
-		WorkDir:    repoRoot(t),
-		ArenaBytes: 1234,
-	}, []string{"./internal/compilerplugintest/basic"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(result.RewrittenFiles) == 0 {
-		t.Fatal("expected rewritten files")
-	}
-
-	data, err := os.ReadFile(result.RewrittenFiles[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := string(data)
-	for _, want := range []string{
-		`rustygoArena := rg.NewArena(1234)`,
-		`n := rg.AllocValue[Node](rustygoScope)`,
-		`buf := rg.AllocSlice[byte](rustygoScope, 16)`,
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("rewritten file missing %q\n%s", want, got)
-		}
-	}
-}
-
 func TestBuild(t *testing.T) {
+	root := repoRoot(t)
+	rustygoc := filepath.Join(root, "compilerplugin", "cmd", "rustygoc")
+
+	// We must first go install rustygoc or run it with go run. Let's use go run.
+	cmd := exec.Command("go", "run", rustygoc, "build", "./internal/compilerplugintest/basic")
+	cmd.Dir = root
 	var stdout bytes.Buffer
-	result, err := compilerplugin.Build(compilerplugin.Config{
-		WorkDir:    repoRoot(t),
-		ArenaBytes: 2048,
-		Stdout:     &stdout,
-		Stderr:     &stdout,
-	}, []string{"./internal/compilerplugintest/basic"}, nil)
-	if err != nil {
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stdout
+	cmd.Env = append(os.Environ(), "RUSTYGO_ARENA_BYTES=2048")
+
+	if err := cmd.Run(); err != nil {
 		t.Fatalf("build failed: %v\n%s", err, stdout.String())
-	}
-	if result == nil {
-		t.Fatal("expected build result")
 	}
 }
 

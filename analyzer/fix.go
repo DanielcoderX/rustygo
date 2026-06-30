@@ -72,6 +72,9 @@ func rewriteQualifier(fset *token.FileSet, file *ast.File, pkgPath string) strin
 			continue
 		}
 		if imp.Name != nil {
+			if imp.Name.Name == "_" {
+				continue
+			}
 			return imp.Name.Name
 		}
 		return "rustygo"
@@ -122,6 +125,14 @@ func insertScopeSetup(body *ast.BlockStmt, qualifier, arenaName, scopeName strin
 					Sel: ast.NewIdent("EnterScope"),
 				},
 			}},
+		},
+		&ast.DeferStmt{
+			Call: &ast.CallExpr{
+				Fun: &ast.SelectorExpr{
+					X:   ast.NewIdent(arenaName),
+					Sel: ast.NewIdent("Close"),
+				},
+			},
 		},
 		&ast.DeferStmt{
 			Call: &ast.CallExpr{

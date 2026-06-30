@@ -107,28 +107,52 @@ func filterEligibleSites(candidates []site, info *types.Info) []site {
 	return eligible
 }
 
-func collectCandidates(body *ast.BlockStmt, info *types.Info) []site {
-	var candidates []site
-	ast.Inspect(body, func(n ast.Node) bool {
-		switch stmt := n.(type) {
-		case *ast.AssignStmt:
-			candidates = append(candidates, sitesFromAssign(stmt, body, info)...)
-		case *ast.DeclStmt:
+type candidateVisitor struct {
+	body       *ast.BlockStmt
+	info       *types.Info
+	loopDepth  int
+	candidates []site
+}
+
+func (v *candidateVisitor) Visit(node ast.Node) ast.Visitor {
+	if node == nil {
+		return nil
+	}
+
+	switch stmt := node.(type) {
+	case *ast.ForStmt, *ast.RangeStmt:
+		return &candidateVisitor{
+			body:       v.body,
+			info:       v.info,
+			loopDepth:  v.loopDepth + 1,
+			candidates: v.candidates,
+		}
+	case *ast.AssignStmt:
+		if v.loopDepth == 0 {
+			v.candidates = append(v.candidates, sitesFromAssign(stmt, v.body, v.info)...)
+		}
+	case *ast.DeclStmt:
+		if v.loopDepth == 0 {
 			gen, ok := stmt.Decl.(*ast.GenDecl)
-			if !ok || gen.Tok != token.VAR {
-				return true
-			}
-			for _, spec := range gen.Specs {
-				valueSpec, ok := spec.(*ast.ValueSpec)
-				if !ok {
-					continue
+			if ok && gen.Tok == token.VAR {
+				for _, spec := range gen.Specs {
+					if valueSpec, ok := spec.(*ast.ValueSpec); ok {
+						v.candidates = append(v.candidates, sitesFromValueSpec(valueSpec, v.body, v.info)...)
+					}
 				}
-				candidates = append(candidates, sitesFromValueSpec(valueSpec, body, info)...)
 			}
 		}
-		return true
-	})
-	return candidates
+	}
+	return v
+}
+
+func collectCandidates(body *ast.BlockStmt, info *types.Info) []site {
+	v := &candidateVisitor{
+		body: body,
+		info: info,
+	}
+	ast.Walk(v, body)
+	return v.candidates
 }
 
 func sitesFromAssign(stmt *ast.AssignStmt, body *ast.BlockStmt, info *types.Info) []site {
@@ -260,7 +284,28 @@ func candidateEscapes(body *ast.BlockStmt, info *types.Info, obj *types.Var) boo
 			return false
 		}
 
+		if n == nil {
+			// We can't easily track leaving nodes in ast.Inspect for unsafeDepth.
+			// Instead, we will do a targeted check when we hit a GoStmt, DeferStmt, or FuncLit.
+			return true
+		}
+
 		switch node := n.(type) {
+		case *ast.GoStmt:
+			if usesObject(node, info, obj) {
+				escapes = true
+				return false
+			}
+		case *ast.DeferStmt:
+			if usesObject(node, info, obj) {
+				escapes = true
+				return false
+			}
+		case *ast.FuncLit:
+			if usesObject(node, info, obj) {
+				escapes = true
+				return false
+			}
 		case *ast.ReturnStmt:
 			for _, result := range node.Results {
 				if escapingValueUse(result, info, obj) {
@@ -301,6 +346,23 @@ func candidateEscapes(body *ast.BlockStmt, info *types.Info, obj *types.Var) boo
 	})
 
 	return escapes
+}
+
+func usesObject(node ast.Node, info *types.Info, obj *types.Var) bool {
+	used := false
+	ast.Inspect(node, func(n ast.Node) bool {
+		if used {
+			return false
+		}
+		if ident, ok := n.(*ast.Ident); ok {
+			if use, ok := info.ObjectOf(ident).(*types.Var); ok && use == obj {
+				used = true
+				return false
+			}
+		}
+		return true
+	})
+	return used
 }
 
 func builtinSafeCall(call *ast.CallExpr, info *types.Info, obj *types.Var) bool {
