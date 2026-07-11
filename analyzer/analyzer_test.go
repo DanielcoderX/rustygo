@@ -49,7 +49,8 @@ func TestRewriteFile(t *testing.T) {
 		`s := rg.AllocSlice[int](rustygoScope, 64)`,
 		`m := rg.AllocMap[string, int](rustygoScope)`,
 		`c := rg.AllocChan[int](rustygoScope, 1)`,
-		`rustygoBulk := rg.AllocSlice[byte](rustygoScope, rustygoOff2+rustygoSz2)`,
+		`rustygoBulk :=`,
+		`rg.AllocSlice[byte](rustygoScope, rustygoOff2+rustygoSz2)`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("rewrite output missing %q\n%s", want, got)

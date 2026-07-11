@@ -50,13 +50,27 @@ type site struct {
 func run(pass *analysis.Pass) (interface{}, error) {
 	result := &Result{}
 
+	funcDecls := make(map[string]*ast.FuncDecl)
+	for _, file := range pass.Files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			if fd, ok := n.(*ast.FuncDecl); ok {
+				if obj, ok := pass.TypesInfo.ObjectOf(fd.Name).(*types.Func); ok {
+					funcDecls[obj.FullName()] = fd
+				}
+				return false
+			}
+			return true
+		})
+	}
+
+
 	for _, file := range pass.Files {
 		if isGenerated(file) {
 			continue
 		}
 		allSites := collectSites(file, pass.TypesInfo)
 		result.Total += len(allSites)
-		for _, site := range filterEligibleSites(allSites, pass.TypesInfo) {
+		for _, site := range filterEligibleSites(allSites, pass.TypesInfo, funcDecls) {
 			result.Eligible++
 			pass.Reportf(site.pos, "[rustygo] %s(%s) is arena-eligible", site.kind, site.typeName)
 			result.Findings = append(result.Findings, Finding{
@@ -97,10 +111,14 @@ func collectSites(file *ast.File, info *types.Info) []site {
 	return sites
 }
 
-func filterEligibleSites(candidates []site, info *types.Info) []site {
+func filterEligibleSites(candidates []site, info *types.Info, funcDecls map[string]*ast.FuncDecl) []site {
 	var eligible []site
 	for _, candidate := range candidates {
-		if candidate.target == nil || candidateEscapes(candidate.body, info, candidate.target) {
+		visited := make(map[*types.Var]bool)
+		if candidate.target != nil {
+			visited[candidate.target] = true
+		}
+		if candidate.target == nil || candidateEscapes(candidate.body, info, candidate.target, funcDecls, visited) {
 			continue
 		}
 		eligible = append(eligible, candidate)
@@ -345,7 +363,7 @@ func uxtMapString(m *types.Map) types.Type {
 	return m
 }
 
-func candidateEscapes(body *ast.BlockStmt, info *types.Info, obj *types.Var) bool {
+func candidateEscapes(body *ast.BlockStmt, info *types.Info, obj *types.Var, funcDecls map[string]*ast.FuncDecl, visited map[*types.Var]bool) bool {
 	escapes := false
 
 	ast.Inspect(body, func(n ast.Node) bool {
@@ -354,8 +372,6 @@ func candidateEscapes(body *ast.BlockStmt, info *types.Info, obj *types.Var) boo
 		}
 
 		if n == nil {
-			// We can't easily track leaving nodes in ast.Inspect for unsafeDepth.
-			// Instead, we will do a targeted check when we hit a GoStmt, DeferStmt, or FuncLit.
 			return true
 		}
 
@@ -393,8 +409,44 @@ func candidateEscapes(body *ast.BlockStmt, info *types.Info, obj *types.Var) boo
 			if builtinSafeCall(node, info, obj) {
 				return true
 			}
-			for _, arg := range node.Args {
+			
+			var targetFunc *types.Func
+			switch fun := unparen(node.Fun).(type) {
+			case *ast.Ident:
+				if f, ok := info.ObjectOf(fun).(*types.Func); ok {
+					targetFunc = f
+				}
+			case *ast.SelectorExpr:
+				if f, ok := info.ObjectOf(fun.Sel).(*types.Func); ok {
+					targetFunc = f
+				}
+			}
+			
+			var fd *ast.FuncDecl
+			var hasBody bool
+			if targetFunc != nil {
+				fd, hasBody = funcDecls[targetFunc.FullName()]
+			}
+			var sig *types.Signature
+			if targetFunc != nil {
+				sig, _ = targetFunc.Type().(*types.Signature)
+			}
+			
+			for argIdx, arg := range node.Args {
 				if escapingValueUse(arg, info, obj) {
+					if hasBody && fd.Body != nil && sig != nil && argIdx < sig.Params().Len() {
+						paramVar := sig.Params().At(argIdx)
+						if !visited[paramVar] {
+							visitedCopy := make(map[*types.Var]bool)
+							for k, v := range visited {
+								visitedCopy[k] = v
+							}
+							visitedCopy[paramVar] = true
+							if !candidateEscapes(fd.Body, info, paramVar, funcDecls, visitedCopy) {
+								continue
+							}
+						}
+					}
 					escapes = true
 					return false
 				}
@@ -461,14 +513,7 @@ func escapingValueUse(expr ast.Expr, info *types.Info, obj *types.Var) bool {
 	case *ast.KeyValueExpr:
 		return escapingValueUse(expr.Key, info, obj) || escapingValueUse(expr.Value, info, obj)
 	case *ast.CallExpr:
-		if builtinSafeCall(expr, info, obj) {
-			return false
-		}
-		for _, arg := range expr.Args {
-			if escapingValueUse(arg, info, obj) {
-				return true
-			}
-		}
+		return false
 	case *ast.SelectorExpr:
 		if directUseOf(expr.X, info, obj) {
 			return false

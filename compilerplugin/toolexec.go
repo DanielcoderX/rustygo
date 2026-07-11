@@ -3,6 +3,7 @@ package compilerplugin
 import (
 	"fmt"
 	"go/ast"
+	"go/types"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -115,6 +116,19 @@ func ToolExec(args []string) error {
 
 
 
+	funcDecls := make(map[string]*ast.FuncDecl)
+	for _, file := range pkg.Syntax {
+		ast.Inspect(file, func(n ast.Node) bool {
+			if fd, ok := n.(*ast.FuncDecl); ok {
+				if obj, ok := pkg.TypesInfo.ObjectOf(fd.Name).(*types.Func); ok {
+					funcDecls[obj.FullName()] = fd
+				}
+				return false
+			}
+			return true
+		})
+	}
+
 	newArgs := make([]string, len(toolArgs))
 	copy(newArgs, toolArgs)
 
@@ -133,7 +147,7 @@ func ToolExec(args []string) error {
 		go func(idx int, fAST *ast.File) {
 			defer wg.Done()
 			origPath := pkg.GoFiles[idx]
-			outBytes, changed, err := analyzer.RewriteFileWithConfig(pkg.Fset, fAST, pkg.TypesInfo, pkg.PkgPath, rewriteCfg)
+			outBytes, changed, err := analyzer.RewriteFileWithConfig(pkg.Fset, fAST, pkg.TypesInfo, pkg.PkgPath, rewriteCfg, funcDecls)
 			if err != nil {
 				resChan <- result{err: err}
 				return

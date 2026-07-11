@@ -4,6 +4,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"go/types"
+	"go/ast"
 	"os"
 
 	"rustygo/analyzer"
@@ -52,8 +54,20 @@ func runFixMode(args []string) error {
 	changed := 0
 	rewriteCfg := analyzer.RewriteConfig{ArenaBytes: *arenaBytes}
 	for _, pkg := range pkgs {
+		funcDecls := make(map[string]*ast.FuncDecl)
+		for _, file := range pkg.Syntax {
+			ast.Inspect(file, func(n ast.Node) bool {
+				if fd, ok := n.(*ast.FuncDecl); ok {
+					if obj, ok := pkg.TypesInfo.ObjectOf(fd.Name).(*types.Func); ok {
+						funcDecls[obj.FullName()] = fd
+					}
+					return false
+				}
+				return true
+			})
+		}
 		for i, file := range pkg.Syntax {
-			out, ok, err := analyzer.RewriteFileWithConfig(pkg.Fset, file, pkg.TypesInfo, pkg.PkgPath, rewriteCfg)
+			out, ok, err := analyzer.RewriteFileWithConfig(pkg.Fset, file, pkg.TypesInfo, pkg.PkgPath, rewriteCfg, funcDecls)
 			if err != nil {
 				return err
 			}

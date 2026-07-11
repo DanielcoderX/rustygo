@@ -19,15 +19,25 @@ type RewriteConfig struct {
 }
 
 func RewriteFile(fset *token.FileSet, file *ast.File, info *types.Info, pkgPath string) ([]byte, bool, error) {
-	return RewriteFileWithConfig(fset, file, info, pkgPath, RewriteConfig{})
+	funcDecls := make(map[string]*ast.FuncDecl)
+	ast.Inspect(file, func(n ast.Node) bool {
+		if fd, ok := n.(*ast.FuncDecl); ok {
+			if obj, ok := info.ObjectOf(fd.Name).(*types.Func); ok {
+				funcDecls[obj.FullName()] = fd
+			}
+			return false
+		}
+		return true
+	})
+	return RewriteFileWithConfig(fset, file, info, pkgPath, RewriteConfig{}, funcDecls)
 }
 
-func RewriteFileWithConfig(fset *token.FileSet, file *ast.File, info *types.Info, pkgPath string, cfg RewriteConfig) ([]byte, bool, error) {
+func RewriteFileWithConfig(fset *token.FileSet, file *ast.File, info *types.Info, pkgPath string, cfg RewriteConfig, funcDecls map[string]*ast.FuncDecl) ([]byte, bool, error) {
 	if isGenerated(file) {
 		return nil, false, nil
 	}
 
-	sites := filterEligibleSites(collectSites(file, info), info)
+	sites := filterEligibleSites(collectSites(file, info), info, funcDecls)
 	byBody := map[*ast.BlockStmt][]site{}
 	for _, site := range sites {
 		if !site.fixable || site.body == nil || site.exprPtr == nil {
@@ -380,6 +390,11 @@ func rewriteBulk(body *ast.BlockStmt, sites []site, qualifier, scopeName string)
 			Tok: token.DEFINE,
 			Rhs: []ast.Expr{szVal},
 		})
+		stmts = append(stmts, &ast.AssignStmt{
+			Lhs: []ast.Expr{ast.NewIdent("_")},
+			Tok: token.ASSIGN,
+			Rhs: []ast.Expr{ast.NewIdent(szName)},
+		})
 		
 		alVal := &ast.CallExpr{
 			Fun: ast.NewIdent("int"),
@@ -396,6 +411,11 @@ func rewriteBulk(body *ast.BlockStmt, sites []site, qualifier, scopeName string)
 			Lhs: []ast.Expr{ast.NewIdent(alName)},
 			Tok: token.DEFINE,
 			Rhs: []ast.Expr{alVal},
+		})
+		stmts = append(stmts, &ast.AssignStmt{
+			Lhs: []ast.Expr{ast.NewIdent("_")},
+			Tok: token.ASSIGN,
+			Rhs: []ast.Expr{ast.NewIdent(alName)},
 		})
 		
 		var offVal ast.Expr
@@ -436,6 +456,11 @@ func rewriteBulk(body *ast.BlockStmt, sites []site, qualifier, scopeName string)
 			Tok: token.DEFINE,
 			Rhs: []ast.Expr{offVal},
 		})
+		stmts = append(stmts, &ast.AssignStmt{
+			Lhs: []ast.Expr{ast.NewIdent("_")},
+			Tok: token.ASSIGN,
+			Rhs: []ast.Expr{ast.NewIdent(offName)},
+		})
 		
 		rewriteSiteInBulk(s, bulkBufName, offName, elemType)
 		
@@ -461,7 +486,7 @@ func rewriteBulk(body *ast.BlockStmt, sites []site, qualifier, scopeName string)
 		}},
 	}
 	
-	body.List = append(append(body.List[:4], append([]ast.Stmt{bulkAllocStmt}, stmts...)...), body.List[4:]...)
+	body.List = append(append(body.List[:4], append(stmts, bulkAllocStmt)...), body.List[4:]...)
 }
 
 func rewriteSiteInBulk(s site, bulkBufName, offName string, elemType ast.Expr) {

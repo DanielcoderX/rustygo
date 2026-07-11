@@ -93,3 +93,26 @@ func makeEscapesViaIndexAddress() *int {
 	s := make([]int, 4)
 	return &s[0]
 }
+
+// safeCallee: does not escape parameter
+func safeCallee(node *Node) int {
+	return node.Val
+}
+
+// unsafeCallee: escapes parameter
+var globalNode *Node
+func unsafeCallee(node *Node) {
+	globalNode = node
+}
+
+// interFuncSafe: passes candidate to safeCallee - eligible!
+func interFuncSafe() int {
+	n := new(Node) // want `arena-eligible`
+	return safeCallee(n)
+}
+
+// interFuncUnsafe: passes candidate to unsafeCallee - escapes, NOT eligible!
+func interFuncUnsafe() {
+	n := new(Node)
+	unsafeCallee(n)
+}
