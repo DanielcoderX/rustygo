@@ -40,6 +40,7 @@ type site struct {
 	fixable  bool
 
 	body     *ast.BlockStmt
+	exprPtr  *ast.Expr
 	call     *ast.CallExpr
 	typeExpr ast.Expr
 	lenExpr  ast.Expr
@@ -175,7 +176,7 @@ func sitesFromAssign(stmt *ast.AssignStmt, body *ast.BlockStmt, info *types.Info
 		if !ok {
 			continue
 		}
-		if site, ok := makeSite(obj, body, stmt.Rhs[i], info); ok {
+		if site, ok := makeSite(obj, body, &stmt.Rhs[i], info); ok {
 			sites = append(sites, site)
 		}
 	}
@@ -198,14 +199,15 @@ func sitesFromValueSpec(spec *ast.ValueSpec, body *ast.BlockStmt, info *types.In
 		if !ok {
 			continue
 		}
-		if site, ok := makeSite(obj, body, spec.Values[i], info); ok {
+		if site, ok := makeSite(obj, body, &spec.Values[i], info); ok {
 			sites = append(sites, site)
 		}
 	}
 	return sites
 }
 
-func makeSite(obj *types.Var, body *ast.BlockStmt, expr ast.Expr, info *types.Info) (site, bool) {
+func makeSite(obj *types.Var, body *ast.BlockStmt, exprPtr *ast.Expr, info *types.Info) (site, bool) {
+	expr := *exprPtr
 	switch expr := expr.(type) {
 	case *ast.CallExpr:
 		ident, ok := expr.Fun.(*ast.Ident)
@@ -225,36 +227,73 @@ func makeSite(obj *types.Var, body *ast.BlockStmt, expr ast.Expr, info *types.In
 				target:   obj,
 				fixable:  true,
 				body:     body,
+				exprPtr:  exprPtr,
 				call:     expr,
 				typeExpr: expr.Args[0],
 			}, true
 		case "make":
-			if len(expr.Args) < 2 {
+			if len(expr.Args) < 1 {
 				return site{}, false
 			}
 			t := info.TypeOf(expr.Args[0])
 			if t == nil {
 				return site{}, false
 			}
-			if _, ok := t.Underlying().(*types.Slice); !ok {
-				return site{}, false
+			switch ut := t.Underlying().(type) {
+			case *types.Slice:
+				if len(expr.Args) < 2 {
+					return site{}, false
+				}
+				site := site{
+					pos:      expr.Pos(),
+					end:      expr.End(),
+					kind:     "make",
+					typeName: shortTypeString(t),
+					target:   obj,
+					fixable:  true,
+					body:     body,
+					exprPtr:  exprPtr,
+					call:     expr,
+					typeExpr: expr.Args[0],
+					lenExpr:  expr.Args[1],
+				}
+				if len(expr.Args) > 2 {
+					site.capExpr = expr.Args[2]
+				}
+				return site, true
+			case *types.Map:
+				site := site{
+					pos:      expr.Pos(),
+					end:      expr.End(),
+					kind:     "make_map",
+					typeName: shortTypeString(uxtMapString(ut)),
+					target:   obj,
+					fixable:  true,
+					body:     body,
+					exprPtr:  exprPtr,
+					typeExpr: expr.Args[0],
+				}
+				if len(expr.Args) > 1 {
+					site.lenExpr = expr.Args[1]
+				}
+				return site, true
+			case *types.Chan:
+				site := site{
+					pos:      expr.Pos(),
+					end:      expr.End(),
+					kind:     "make_chan",
+					typeName: shortTypeString(t),
+					target:   obj,
+					fixable:  true,
+					body:     body,
+					exprPtr:  exprPtr,
+					typeExpr: expr.Args[0],
+				}
+				if len(expr.Args) > 1 {
+					site.lenExpr = expr.Args[1]
+				}
+				return site, true
 			}
-			site := site{
-				pos:      expr.Pos(),
-				end:      expr.End(),
-				kind:     "make",
-				typeName: shortTypeString(t),
-				target:   obj,
-				fixable:  true,
-				body:     body,
-				call:     expr,
-				typeExpr: expr.Args[0],
-				lenExpr:  expr.Args[1],
-			}
-			if len(expr.Args) > 2 {
-				site.capExpr = expr.Args[2]
-			}
-			return site, true
 		}
 	case *ast.CompositeLit:
 		t := info.TypeOf(expr)
@@ -270,10 +309,40 @@ func makeSite(obj *types.Var, body *ast.BlockStmt, expr ast.Expr, info *types.In
 			kind:     "literal",
 			typeName: shortTypeString(t),
 			target:   obj,
+			fixable:  true,
 			body:     body,
+			exprPtr:  exprPtr,
+			typeExpr: expr.Type,
+			lenExpr:  expr,
 		}, true
+	case *ast.UnaryExpr:
+		if expr.Op == token.AND {
+			if lit, ok := unparen(expr.X).(*ast.CompositeLit); ok {
+				t := info.TypeOf(lit)
+				if t != nil {
+					if _, ok := t.Underlying().(*types.Struct); ok {
+						return site{
+							pos:      expr.Pos(),
+							end:      expr.End(),
+							kind:     "pointer_literal",
+							typeName: shortTypeString(t),
+							target:   obj,
+							fixable:  true,
+							body:     body,
+							exprPtr:  exprPtr,
+							typeExpr: lit.Type,
+							lenExpr:  lit,
+						}, true
+					}
+				}
+			}
+		}
 	}
 	return site{}, false
+}
+
+func uxtMapString(m *types.Map) types.Type {
+	return m
 }
 
 func candidateEscapes(body *ast.BlockStmt, info *types.Info, obj *types.Var) bool {

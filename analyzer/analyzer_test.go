@@ -39,13 +39,17 @@ func TestRewriteFile(t *testing.T) {
 
 	got := string(out)
 	for _, want := range []string{
-		`import rg "rustygo"`,
+		`rg "rustygo"`,
+		`"unsafe"`,
 		`rustygoArena := rg.NewArena(`,
 		`65536`,
 		`rustygoScope := rustygoArena.EnterScope(`,
 		`rustygoScope.Exit()`,
 		`n := rg.AllocValue[Node](rustygoScope)`,
 		`s := rg.AllocSlice[int](rustygoScope, 64)`,
+		`m := rg.AllocMap[string, int](rustygoScope)`,
+		`c := rg.AllocChan[int](rustygoScope, 1)`,
+		`rustygoBulk := rg.AllocSlice[byte](rustygoScope, rustygoOff2+rustygoSz2)`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("rewrite output missing %q\n%s", want, got)

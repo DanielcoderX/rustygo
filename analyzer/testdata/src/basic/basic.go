@@ -37,6 +37,34 @@ func compositeLitLocal() int {
 	return n.Val
 }
 
+// pointerLitLocal: pointer struct literal stays local — arena-eligible
+func pointerLitLocal() int {
+	n := &Node{Val: 9} // want `arena-eligible`
+	return n.Val
+}
+
+// mapLocal: map stays local — arena-eligible
+func mapLocal() int {
+	m := make(map[string]int) // want `arena-eligible`
+	m["foo"] = 12
+	return m["foo"]
+}
+
+// chanLocal: chan stays local — arena-eligible
+func chanLocal() int {
+	c := make(chan int, 1) // want `arena-eligible`
+	c <- 45
+	return <-c
+}
+
+// bulkLocal: multiple allocations in the same function - bulk-eligible
+func bulkLocal() int {
+	n1 := new(Node) // want `arena-eligible`
+	n2 := &Node{Val: 5} // want `arena-eligible`
+	s3 := make([]int, 10) // want `arena-eligible`
+	return n1.Val + n2.Val + len(s3)
+}
+
 type Holder struct {
 	Node *Node
 }

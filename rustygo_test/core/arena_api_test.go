@@ -305,3 +305,26 @@ func assertPanicsWith(t *testing.T, want string, fn func()) {
 	}()
 	fn()
 }
+
+func TestAllocMapAndAllocChan(t *testing.T) {
+	arena := rg.NewArena(1024)
+	scope := arena.EnterScope()
+
+	m := rg.AllocMap[string, int](scope)
+	m["hello"] = 42
+
+	ch := rg.AllocChan[string](scope, 2)
+	ch <- "foo"
+	ch <- "bar"
+
+	scope.Exit()
+
+	// Verify that the pooled map was cleared when returned to the pool.
+	// We get it from the pool again to verify it is clear.
+	scope2 := arena.EnterScope()
+	m2 := rg.AllocMap[string, int](scope2)
+	if len(m2) != 0 {
+		t.Fatalf("expected recycled map to be clear, got len %d", len(m2))
+	}
+	scope2.Exit()
+}

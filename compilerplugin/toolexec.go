@@ -2,11 +2,13 @@ package compilerplugin
 
 import (
 	"fmt"
+	"go/ast"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"rustygo/analyzer"
 
@@ -116,23 +118,52 @@ func ToolExec(args []string) error {
 	newArgs := make([]string, len(toolArgs))
 	copy(newArgs, toolArgs)
 
-	for i, fileAST := range pkg.Syntax {
-		origPath := pkg.GoFiles[i]
-		outBytes, changed, err := analyzer.RewriteFileWithConfig(pkg.Fset, fileAST, pkg.TypesInfo, pkg.PkgPath, rewriteCfg)
-		if err != nil {
-			return err
-		}
+	type result struct {
+		idx     int
+		newPath string
+		changed bool
+		err     error
+	}
 
-		if changed {
-			baseName := filepath.Base(origPath)
-			newPath := filepath.Join(tempDir, baseName)
-			if err := os.WriteFile(newPath, outBytes, 0644); err != nil {
-				return err
+	resChan := make(chan result, len(pkg.Syntax))
+	var wg sync.WaitGroup
+
+	for i, fileAST := range pkg.Syntax {
+		wg.Add(1)
+		go func(idx int, fAST *ast.File) {
+			defer wg.Done()
+			origPath := pkg.GoFiles[idx]
+			outBytes, changed, err := analyzer.RewriteFileWithConfig(pkg.Fset, fAST, pkg.TypesInfo, pkg.PkgPath, rewriteCfg)
+			if err != nil {
+				resChan <- result{err: err}
+				return
 			}
-			// Replace in args
+			if changed {
+				baseName := filepath.Base(origPath)
+				newPath := filepath.Join(tempDir, baseName)
+				if err := os.WriteFile(newPath, outBytes, 0644); err != nil {
+					resChan <- result{err: err}
+					return
+				}
+				resChan <- result{idx: idx, newPath: newPath, changed: true}
+			} else {
+				resChan <- result{changed: false}
+			}
+		}(i, fileAST)
+	}
+
+	wg.Wait()
+	close(resChan)
+
+	for res := range resChan {
+		if res.err != nil {
+			return res.err
+		}
+		if res.changed {
+			origPath := pkg.GoFiles[res.idx]
 			for _, gIdx := range goFileIndices {
 				if toolArgs[gIdx] == origPath {
-					newArgs[gIdx] = newPath
+					newArgs[gIdx] = res.newPath
 					break
 				}
 			}

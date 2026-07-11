@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"bytes"
+	"fmt"
 	"go/ast"
 	"go/format"
 	"go/token"
@@ -29,7 +30,7 @@ func RewriteFileWithConfig(fset *token.FileSet, file *ast.File, info *types.Info
 	sites := filterEligibleSites(collectSites(file, info), info)
 	byBody := map[*ast.BlockStmt][]site{}
 	for _, site := range sites {
-		if !site.fixable || site.body == nil || site.call == nil {
+		if !site.fixable || site.body == nil || site.exprPtr == nil {
 			continue
 		}
 		byBody[site.body] = append(byBody[site.body], site)
@@ -39,13 +40,36 @@ func RewriteFileWithConfig(fset *token.FileSet, file *ast.File, info *types.Info
 	}
 
 	qualifier := rewriteQualifier(fset, file, pkgPath)
+	hasBulk := false
 	for body, bodySites := range byBody {
+		var bulkSites []site
+		var otherSites []site
+		for _, s := range bodySites {
+			if s.kind == "new" || s.kind == "make" || s.kind == "literal" || s.kind == "pointer_literal" {
+				bulkSites = append(bulkSites, s)
+			} else {
+				otherSites = append(otherSites, s)
+			}
+		}
+
 		scopeName := uniqueName(body, "rustygoScope")
 		arenaName := uniqueName(body, "rustygoArena")
 		insertScopeSetup(body, qualifier, arenaName, scopeName, cfg.arenaBytesOrDefault())
-		for _, site := range bodySites {
-			rewriteSite(site, qualifier, scopeName)
+
+		if len(bulkSites) >= 2 {
+			hasBulk = true
+			rewriteBulk(body, bulkSites, qualifier, scopeName)
+		} else {
+			otherSites = append(otherSites, bulkSites...)
 		}
+
+		for _, s := range otherSites {
+			rewriteSite(s, qualifier, scopeName)
+		}
+	}
+
+	if hasBulk {
+		astutil.AddImport(fset, file, "unsafe")
 	}
 
 	var buf bytes.Buffer
@@ -155,11 +179,13 @@ func arenaSizeExpr(arenaBytes int) ast.Expr {
 func rewriteSite(site site, qualifier, scopeName string) {
 	switch site.kind {
 	case "new":
-		site.call.Fun = &ast.IndexExpr{
-			X:     selectorOrIdent(qualifier, "AllocValue"),
-			Index: site.typeExpr,
+		*site.exprPtr = &ast.CallExpr{
+			Fun: &ast.IndexExpr{
+				X:     selectorOrIdent(qualifier, "AllocValue"),
+				Index: site.typeExpr,
+			},
+			Args: []ast.Expr{ast.NewIdent(scopeName)},
 		}
-		site.call.Args = []ast.Expr{ast.NewIdent(scopeName)}
 	case "make":
 		method := "AllocSlice"
 		args := []ast.Expr{ast.NewIdent(scopeName), site.lenExpr}
@@ -167,11 +193,120 @@ func rewriteSite(site site, qualifier, scopeName string) {
 			method = "AllocSliceCap"
 			args = append(args, site.capExpr)
 		}
-		site.call.Fun = &ast.IndexExpr{
-			X:     selectorOrIdent(qualifier, method),
-			Index: sliceElemExpr(site.typeExpr),
+		*site.exprPtr = &ast.CallExpr{
+			Fun: &ast.IndexExpr{
+				X:     selectorOrIdent(qualifier, method),
+				Index: sliceElemExpr(site.typeExpr),
+			},
+			Args: args,
 		}
-		site.call.Args = args
+	case "make_map":
+		mapType, ok := site.typeExpr.(*ast.MapType)
+		if !ok {
+			return
+		}
+		*site.exprPtr = &ast.CallExpr{
+			Fun: &ast.IndexListExpr{
+				X:       selectorOrIdent(qualifier, "AllocMap"),
+				Indices: []ast.Expr{mapType.Key, mapType.Value},
+			},
+			Args: []ast.Expr{ast.NewIdent(scopeName)},
+		}
+	case "make_chan":
+		chanType, ok := site.typeExpr.(*ast.ChanType)
+		if !ok {
+			return
+		}
+		capExpr := site.lenExpr
+		if capExpr == nil {
+			capExpr = &ast.BasicLit{Kind: token.INT, Value: "0"}
+		}
+		*site.exprPtr = &ast.CallExpr{
+			Fun: &ast.IndexExpr{
+				X:     selectorOrIdent(qualifier, "AllocChan"),
+				Index: chanType.Value,
+			},
+			Args: []ast.Expr{ast.NewIdent(scopeName), capExpr},
+		}
+	case "pointer_literal":
+		rIdent := ast.NewIdent("r")
+		*site.exprPtr = &ast.CallExpr{
+			Fun: &ast.FuncLit{
+				Type: &ast.FuncType{
+					Params: &ast.FieldList{},
+					Results: &ast.FieldList{
+						List: []*ast.Field{
+							{
+								Type: &ast.StarExpr{X: site.typeExpr},
+							},
+						},
+					},
+				},
+				Body: &ast.BlockStmt{
+					List: []ast.Stmt{
+						&ast.AssignStmt{
+							Lhs: []ast.Expr{rIdent},
+							Tok: token.DEFINE,
+							Rhs: []ast.Expr{&ast.CallExpr{
+								Fun: &ast.IndexExpr{
+									X:     selectorOrIdent(qualifier, "AllocValue"),
+									Index: site.typeExpr,
+								},
+								Args: []ast.Expr{ast.NewIdent(scopeName)},
+							}},
+						},
+						&ast.AssignStmt{
+							Lhs: []ast.Expr{&ast.StarExpr{X: rIdent}},
+							Tok: token.ASSIGN,
+							Rhs: []ast.Expr{site.lenExpr},
+						},
+						&ast.ReturnStmt{
+							Results: []ast.Expr{rIdent},
+						},
+					},
+				},
+			},
+		}
+	case "literal":
+		rIdent := ast.NewIdent("r")
+		iife := &ast.CallExpr{
+			Fun: &ast.FuncLit{
+				Type: &ast.FuncType{
+					Params: &ast.FieldList{},
+					Results: &ast.FieldList{
+						List: []*ast.Field{
+							{
+								Type: &ast.StarExpr{X: site.typeExpr},
+							},
+						},
+					},
+				},
+				Body: &ast.BlockStmt{
+					List: []ast.Stmt{
+						&ast.AssignStmt{
+							Lhs: []ast.Expr{rIdent},
+							Tok: token.DEFINE,
+							Rhs: []ast.Expr{&ast.CallExpr{
+								Fun: &ast.IndexExpr{
+									X:     selectorOrIdent(qualifier, "AllocValue"),
+									Index: site.typeExpr,
+								},
+								Args: []ast.Expr{ast.NewIdent(scopeName)},
+							}},
+						},
+						&ast.AssignStmt{
+							Lhs: []ast.Expr{&ast.StarExpr{X: rIdent}},
+							Tok: token.ASSIGN,
+							Rhs: []ast.Expr{site.lenExpr},
+						},
+						&ast.ReturnStmt{
+							Results: []ast.Expr{rIdent},
+						},
+					},
+				},
+			},
+		}
+		*site.exprPtr = &ast.StarExpr{X: iife}
 	}
 }
 
@@ -190,5 +325,252 @@ func selectorOrIdent(qualifier, name string) ast.Expr {
 	return &ast.SelectorExpr{
 		X:   ast.NewIdent(qualifier),
 		Sel: ast.NewIdent(name),
+	}
+}
+
+func rewriteBulk(body *ast.BlockStmt, sites []site, qualifier, scopeName string) {
+	bulkBufName := uniqueName(body, "rustygoBulk")
+	var stmts []ast.Stmt
+	
+	prevOffExpr := ast.Expr(&ast.BasicLit{Kind: token.INT, Value: "0"})
+	var lastSzExpr ast.Expr
+	
+	for i, s := range sites {
+		szName := uniqueName(body, fmt.Sprintf("rustygoSz%d", i))
+		alName := uniqueName(body, fmt.Sprintf("rustygoAl%d", i))
+		offName := uniqueName(body, fmt.Sprintf("rustygoOff%d", i))
+		
+		var elemType ast.Expr
+		if s.kind == "make" {
+			elemType = sliceElemExpr(s.typeExpr)
+		} else {
+			elemType = s.typeExpr
+		}
+		
+		nilCall := &ast.CallExpr{
+			Fun: &ast.ParenExpr{X: &ast.StarExpr{X: elemType}},
+			Args: []ast.Expr{ast.NewIdent("nil")},
+		}
+		starNilCall := &ast.StarExpr{X: nilCall}
+		
+		szVal := &ast.CallExpr{
+			Fun: ast.NewIdent("int"),
+			Args: []ast.Expr{&ast.CallExpr{
+				Fun: &ast.SelectorExpr{
+					X:   ast.NewIdent("unsafe"),
+					Sel: ast.NewIdent("Sizeof"),
+				},
+				Args: []ast.Expr{starNilCall},
+			}},
+		}
+		
+		if s.kind == "make" {
+			szVal = &ast.CallExpr{
+				Fun: ast.NewIdent("int"),
+				Args: []ast.Expr{&ast.BinaryExpr{
+					X:  szVal,
+					Op: token.MUL,
+					Y:  s.lenExpr,
+				}},
+			}
+		}
+		
+		stmts = append(stmts, &ast.AssignStmt{
+			Lhs: []ast.Expr{ast.NewIdent(szName)},
+			Tok: token.DEFINE,
+			Rhs: []ast.Expr{szVal},
+		})
+		
+		alVal := &ast.CallExpr{
+			Fun: ast.NewIdent("int"),
+			Args: []ast.Expr{&ast.CallExpr{
+				Fun: &ast.SelectorExpr{
+					X:   ast.NewIdent("unsafe"),
+					Sel: ast.NewIdent("Alignof"),
+				},
+				Args: []ast.Expr{starNilCall},
+			}},
+		}
+		
+		stmts = append(stmts, &ast.AssignStmt{
+			Lhs: []ast.Expr{ast.NewIdent(alName)},
+			Tok: token.DEFINE,
+			Rhs: []ast.Expr{alVal},
+		})
+		
+		var offVal ast.Expr
+		if i == 0 {
+			offVal = &ast.BasicLit{Kind: token.INT, Value: "0"}
+		} else {
+			prevSum := &ast.BinaryExpr{
+				X:  prevOffExpr,
+				Op: token.ADD,
+				Y:  lastSzExpr,
+			}
+			numerator := &ast.BinaryExpr{
+				X: &ast.BinaryExpr{
+					X:  prevSum,
+					Op: token.ADD,
+					Y:  ast.NewIdent(alName),
+				},
+				Op: token.SUB,
+				Y:  &ast.BasicLit{Kind: token.INT, Value: "1"},
+			}
+			mask := &ast.UnaryExpr{
+				Op: token.XOR,
+				X: &ast.BinaryExpr{
+					X:  ast.NewIdent(alName),
+					Op: token.SUB,
+					Y:  &ast.BasicLit{Kind: token.INT, Value: "1"},
+				},
+			}
+			offVal = &ast.BinaryExpr{
+				X:  numerator,
+				Op: token.AND,
+				Y:  mask,
+			}
+		}
+		
+		stmts = append(stmts, &ast.AssignStmt{
+			Lhs: []ast.Expr{ast.NewIdent(offName)},
+			Tok: token.DEFINE,
+			Rhs: []ast.Expr{offVal},
+		})
+		
+		rewriteSiteInBulk(s, bulkBufName, offName, elemType)
+		
+		prevOffExpr = ast.NewIdent(offName)
+		lastSzExpr = ast.NewIdent(szName)
+	}
+	
+	totalSizeExpr := &ast.BinaryExpr{
+		X:  prevOffExpr,
+		Op: token.ADD,
+		Y:  lastSzExpr,
+	}
+	
+	bulkAllocStmt := &ast.AssignStmt{
+		Lhs: []ast.Expr{ast.NewIdent(bulkBufName)},
+		Tok: token.DEFINE,
+		Rhs: []ast.Expr{&ast.CallExpr{
+			Fun: &ast.IndexExpr{
+				X:     selectorOrIdent(qualifier, "AllocSlice"),
+				Index: ast.NewIdent("byte"),
+			},
+			Args: []ast.Expr{ast.NewIdent(scopeName), totalSizeExpr},
+		}},
+	}
+	
+	body.List = append(append(body.List[:4], append([]ast.Stmt{bulkAllocStmt}, stmts...)...), body.List[4:]...)
+}
+
+func rewriteSiteInBulk(s site, bulkBufName, offName string, elemType ast.Expr) {
+	ptrExpr := &ast.CallExpr{
+		Fun: &ast.ParenExpr{X: &ast.StarExpr{X: elemType}},
+		Args: []ast.Expr{&ast.CallExpr{
+			Fun: &ast.SelectorExpr{
+				X:   ast.NewIdent("unsafe"),
+				Sel: ast.NewIdent("Pointer"),
+			},
+			Args: []ast.Expr{&ast.UnaryExpr{
+				Op: token.AND,
+				X: &ast.IndexExpr{
+					X:     ast.NewIdent(bulkBufName),
+					Index: ast.NewIdent(offName),
+				},
+			}},
+		}},
+	}
+	
+	switch s.kind {
+	case "new":
+		*s.exprPtr = ptrExpr
+	case "make":
+		capExpr := s.capExpr
+		if capExpr == nil {
+			capExpr = s.lenExpr
+		}
+		sliceCall := &ast.CallExpr{
+			Fun: &ast.SelectorExpr{
+				X:   ast.NewIdent("unsafe"),
+				Sel: ast.NewIdent("Slice"),
+			},
+			Args: []ast.Expr{ptrExpr, capExpr},
+		}
+		if s.capExpr != nil {
+			*s.exprPtr = &ast.SliceExpr{
+				X:    sliceCall,
+				High: s.lenExpr,
+			}
+		} else {
+			*s.exprPtr = sliceCall
+		}
+	case "pointer_literal":
+		rIdent := ast.NewIdent("r")
+		*s.exprPtr = &ast.CallExpr{
+			Fun: &ast.FuncLit{
+				Type: &ast.FuncType{
+					Params: &ast.FieldList{},
+					Results: &ast.FieldList{
+						List: []*ast.Field{
+							{
+								Type: &ast.StarExpr{X: s.typeExpr},
+							},
+						},
+					},
+				},
+				Body: &ast.BlockStmt{
+					List: []ast.Stmt{
+						&ast.AssignStmt{
+							Lhs: []ast.Expr{rIdent},
+							Tok: token.DEFINE,
+							Rhs: []ast.Expr{ptrExpr},
+						},
+						&ast.AssignStmt{
+							Lhs: []ast.Expr{&ast.StarExpr{X: rIdent}},
+							Tok: token.ASSIGN,
+							Rhs: []ast.Expr{s.lenExpr},
+						},
+						&ast.ReturnStmt{
+							Results: []ast.Expr{rIdent},
+						},
+					},
+				},
+			},
+		}
+	case "literal":
+		rIdent := ast.NewIdent("r")
+		iife := &ast.CallExpr{
+			Fun: &ast.FuncLit{
+				Type: &ast.FuncType{
+					Params: &ast.FieldList{},
+					Results: &ast.FieldList{
+						List: []*ast.Field{
+							{
+								Type: &ast.StarExpr{X: s.typeExpr},
+							},
+						},
+					},
+				},
+				Body: &ast.BlockStmt{
+					List: []ast.Stmt{
+						&ast.AssignStmt{
+							Lhs: []ast.Expr{rIdent},
+							Tok: token.DEFINE,
+							Rhs: []ast.Expr{ptrExpr},
+						},
+						&ast.AssignStmt{
+							Lhs: []ast.Expr{&ast.StarExpr{X: rIdent}},
+							Tok: token.ASSIGN,
+							Rhs: []ast.Expr{s.lenExpr},
+						},
+						&ast.ReturnStmt{
+							Results: []ast.Expr{rIdent},
+						},
+					},
+				},
+			},
+		}
+		*s.exprPtr = &ast.StarExpr{X: iife}
 	}
 }

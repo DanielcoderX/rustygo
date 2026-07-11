@@ -2,7 +2,9 @@ package rustygo
 
 import (
 	"errors"
+	"reflect"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 )
@@ -212,9 +214,10 @@ func (a *Arena) WithScope(fn func(*Scope) error) (err error) {
 // ----------------- ScopedArena -----------------
 
 type Scope struct {
-	arena  *Arena
-	used   uint64
-	active uint32
+	arena    *Arena
+	used     uint64
+	active   uint32
+	cleanups []func()
 }
 
 // EnterScope returns a new scope. Scope allocations are concurrency-safe.
@@ -223,6 +226,11 @@ func (a *Arena) EnterScope() *Scope {
 		arena:  a,
 		active: 1,
 	}
+}
+
+// OnExit registers a function to run when the scope exits.
+func (s *Scope) OnExit(fn func()) {
+	s.cleanups = append(s.cleanups, fn)
 }
 
 // TryAlloc allocates memory through the scope and reports whether it succeeded.
@@ -277,11 +285,96 @@ func (s *Scope) UsedBytes() int {
 	return int(atomic.LoadUint64(&s.used))
 }
 
-// Exit marks the scope as inactive.
+// Exit marks the scope as inactive and runs all registered cleanups in reverse order.
 func (s *Scope) Exit() {
 	if !atomic.CompareAndSwapUint32(&s.active, 1, 0) {
 		panic("scope already exited")
 	}
+	for i := len(s.cleanups) - 1; i >= 0; i-- {
+		s.cleanups[i]()
+	}
+	s.cleanups = nil
+}
+
+var (
+	mapPools  sync.Map
+	chanPools sync.Map
+)
+
+func getMapPool(mapType reflect.Type) *sync.Pool {
+	if p, ok := mapPools.Load(mapType); ok {
+		return p.(*sync.Pool)
+	}
+	p := &sync.Pool{
+		New: func() any {
+			return reflect.MakeMap(mapType).Interface()
+		},
+	}
+	actual, _ := mapPools.LoadOrStore(mapType, p)
+	return actual.(*sync.Pool)
+}
+
+func getChanPool(chanType reflect.Type, cap int) *sync.Pool {
+	type key struct {
+		t   reflect.Type
+		cap int
+	}
+	k := key{t: chanType, cap: cap}
+	if p, ok := chanPools.Load(k); ok {
+		return p.(*sync.Pool)
+	}
+	p := &sync.Pool{
+		New: func() any {
+			return reflect.MakeChan(chanType, cap).Interface()
+		},
+	}
+	actual, _ := chanPools.LoadOrStore(k, p)
+	return actual.(*sync.Pool)
+}
+
+func AllocMap[K comparable, V any](s *Scope) map[K]V {
+	if !s.Active() {
+		panic("scope is not active")
+	}
+	var zero map[K]V
+	t := reflect.TypeOf(zero)
+	if t == nil {
+		return make(map[K]V)
+	}
+	pool := getMapPool(t)
+	m := pool.Get().(map[K]V)
+	s.OnExit(func() {
+		clear(m)
+		pool.Put(m)
+	})
+	return m
+}
+
+func AllocChan[T any](s *Scope, cap int) chan T {
+	if !s.Active() {
+		panic("scope is not active")
+	}
+	var zero chan T
+	t := reflect.TypeOf(zero)
+	if t == nil {
+		return make(chan T, cap)
+	}
+	pool := getChanPool(t, cap)
+	ch := pool.Get().(chan T)
+	s.OnExit(func() {
+		for {
+			select {
+			case _, ok := <-ch:
+				if !ok {
+					return
+				}
+			default:
+				pool.Put(ch)
+				return
+			}
+		}
+	})
+	return ch
 }
 
 func isPowerOfTwo(v int) bool {
