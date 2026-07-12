@@ -1,150 +1,131 @@
-# rustygo 🚀
+# RustyGo
 
-**Zero-cost memory primitives and true compiler integration for Go.** 
+RustyGo is a high-performance Go memory optimization framework that enables safe arena allocation by proving that allocations do not outlive their owning scope. It integrates with Go's build system to abstract away Garbage Collection latency and overhead.
 
-`rustygo` brings determinism and massive memory footprint reductions to Go, completely abstracting away the garbage collector. Whether through direct APIs or our **transparent compiler wrapper (`rustygoc`)**, you can drop memory usage by orders of magnitude without changing how you write Go.
+## Architecture
 
----
+The following diagram illustrates the RustyGo analysis and compilation pipeline:
 
-## 🌟 The Star Feature: `rustygoc` Compiler Plugin
-
-The `rustygoc` compiler wrapper is a zero-configuration `-toolexec` wrapper that automatically injects Arena allocations directly into your Go AST during compilation. 
-
-### How it Works
-1. **AST Interception:** `rustygoc` intercepts `go tool compile` and inspects your module's AST.
-2. **Escape Analysis:** It runs a strict, conservative escape analysis. Any object that escapes its function scope, loop body, or gets captured by a goroutine or closure is safely ignored.
-3. **Transparent Rewriting:** For safe, short-lived allocations (e.g., `new()`, `make()`, or struct literals), it injects a transparent `rustygo` Arena block. The memory is instantly released to the OS (`VirtualFree`/`mmap`) as soon as the function returns.
-4. **Seamless Integration:** It safely ignores the standard library, relying heavily on Go's standard build caching to ensure lightning-fast builds.
-
-### Real-World Impact
-In our `compilerplugin/example` benchmark, an application allocating 250KB per request across 100,000 iterations typically triggers massive heap growth due to GC latency. 
-With `rustygoc`, peak memory footprint drops from **25,000 MB (25 GB)** down to **11 MB** with zero code changes, while avoiding all OOM crashes.
-
-### How to Use `rustygoc`
-
-```bash
-# 1. Install the wrapper
-go install ./compilerplugin/cmd/rustygoc
-
-# 2. Build your project seamlessly
-rustygoc build -o optimized_app.exe ./...
+```mermaid
+graph TD
+    Src[Source Code] --> SSA[Go SSA]
+    SSA --> AD[Allocation Discovery]
+    AD --> LC[Lifetime Checker]
+    LC --> EC[Escape Classification]
+    EC --> FAR[Future Arena Rewriter]
+    FAR --> RA[Runtime Arena]
 ```
 
-You can optionally configure the injected Arena size via environment variables:
-`RUSTYGO_ARENA_BYTES=2097152 rustygoc build .`
+### Component Breakdown
+1. **Source Code**: The developer's input files.
+2. **Go SSA**: Static Single Assignment representation generated via `golang.org/x/tools/go/ssa`.
+3. **Allocation Discovery**: Discovers memory allocation candidates (`new`, `make`, literals) and tags them with stable IDs.
+4. **Lifetime Checker**: Analyzes dominance frontiers, lexical blocks, ownership, and aliases to build path-compressed flow graphs.
+5. **Escape Classification**: Converts lifetime states (SAFE, UNSAFE, UNKNOWN) into optimization decisions (Heap, Arena, Unknown).
+6. **Future Arena Rewriter**: Source-to-source AST rewriter that will transparently replace eligible allocations with arena lookups.
+7. **Runtime Arena**: High-performance bump allocator library backing optimized variables.
 
 ---
 
-## 🧠 Generic `SyncPool[T]`
+## Analysis Pipeline
 
-A zero-alloc generic wrapper for `sync.Pool` that works beautifully with structs:
+### 1. SSA Extraction
+Type-checked syntax nodes are converted into Static Single Assignment form, eliminating variable shadowing and rendering dataflow paths explicit.
+
+### 2. Allocation Discovery
+Examines instruction sets in SSA blocks to identify candidate allocations:
 ```go
-pool := rg.NewSyncPoolWrapper(func() *MyStruct {
-	return new(MyStruct)
-})
-
-obj := pool.Get()
-defer pool.Put(obj)
+// Discovered as ssa.Alloc candidate
+x := new(User)
 ```
 
----
-
-## ⚡ Direct API (Manual Usage)
-
-If you prefer not to use the compiler plugin, you can manually use the high-level default session API.
-
+### 3. Lifetime Proof
+Walks the lifetime graph to track aliases and trace uses recursively:
 ```go
-package main
-
-import (
-	"fmt"
-	rg "rustygo"
-)
-
-func main() {
-	err := rg.WithBorrow(1024, func(buf []byte) error {
-		copy(buf, []byte("hello"))
-		fmt.Println(string(buf[:5]))
-		return nil
-	})
-	if err != nil {
-		panic(err)
-	}
+func f() {
+    x := new(User) // Proven SAFE (does not escape scope)
+    _ = x.Name
 }
 ```
 
-For deterministic, zero-ceremony arena allocation:
+### 4. Escape Classification
+Maps findings into compiler directives:
+- **SAFE** -> `Arena`
+- **UNSAFE** -> `Heap`
+- **UNKNOWN** -> `Unknown`
+
+---
+
+## Lifetime Safety Model
+
+RustyGo implements a strict safety verification model based on lexical lifetimes, ownership, and aliases:
+- **Lexical Regions**: Scopes nested hierachically (Function -> Block -> Loop -> If -> Scope).
+- **Ownership Graph**: Ensures every memory location has exactly one owner value. Aliases propagate ownership without duplicating objects.
+- **Escape Rules**: Pointers stored in globals, returned to callers, captured by closures, sent to channels, or passed to external C/reflection boundaries trigger escape violations.
+
+---
+
+## Current Status
+
+```
+[x] Arena allocator
+[x] SSA analysis
+[x] Lifetime checker
+[x] Ownership analysis
+[x] Allocation discovery
+[x] Escape classification
+[ ] Function summaries
+[ ] Arena rewrite pass
+[ ] Compiler integration
+```
+
+---
+
+## Developer Usage
+
+You can invoke the pipeline APIs directly:
 
 ```go
-r := rg.NewRegion(64 * 1024)
-defer r.Done()
+import (
+    "golang.org/x/tools/go/ssa"
+    "rustygo/internal/analysis/pipeline"
+)
 
-node := rg.New[MyNode](r)
-buf := rg.Slice[byte](r, 4096)
+func run(prog *ssa.Program) {
+    res, err := pipeline.Run(prog)
+    if err != nil {
+        panic(err)
+    }
+
+    for _, dec := range res.Decisions {
+        println("Allocation ID:", dec.Allocation.ID)
+        println("Decision:", dec.Decision)
+    }
+}
 ```
 
 ---
 
-## 🔬 Advanced Usage (Optional)
+## Safety Philosophy
 
-Use advanced APIs only when you need deterministic control.
-
-- `Region`: one-line arena+scope lifecycle for the common single-lifetime case.
-- `Arena`: explicit bump allocation, `Mark/Rewind`, aligned allocation.
-- Typed scope helpers: `AllocValue[T](scope)`, `AllocSlice[T](scope, n)`, `AllocSliceCap[T](scope, len, cap)`.
-- `Pool`: backend tuning (`Treiber` vs `sync.Pool`), reset/poison/zero options.
-- GC lifecycle helpers: `WithGCDisabled`, `WithGCPercent`.
+> **"RustyGo never optimizes unless safety can be proven."**
+> 
+> An status of `UNKNOWN` is treated exactly like `UNSAFE` (fallback to Heap).
 
 ---
 
-## 🛡️ Safety Rules
+## Testing
 
-- Never use arena slices after `Arena.Reset()` or `Arena.Rewind(...)` that rewinds before their allocation.
-- Never double-free pooled objects.
-- Treat pooled objects as reusable scratch objects; always fully initialize before use.
-- Prefer callback lifecycles (`WithBorrow`, `WithScope`, `Pool.WithBorrow`) to avoid cleanup leaks.
-
----
-
-## 📊 Observability Guidance
-
-### Why memory may not "drop" immediately
-
-This library focuses on reducing allocations and reusing memory. In Go, reused memory is often retained by the runtime and may not immediately reduce RSS/process memory.
-
-Arena backing is OS-managed on supported targets:
-- `linux`, `darwin`, `freebsd`: `mmap`
-- `windows`: `VirtualAlloc`
-- `js/wasm`, `wasip1`: heap-backed fallback
-
-### Interpreting improvements
-- **Good sign:** lower `allocs/op`, lower `B/op`, lower GC frequency.
-- **Not required:** immediate drop in process RSS.
-- **Expected:** steady-state memory plateau with stable reuse.
+The project maintains:
+- Exhaustive unit tests under `/internal/analysis/...`
+- Integration tests validating control loops, channels, reflection, and unsafe memory boundaries.
+- Benchmarks measuring memory utilization under high-field WASM operations.
 
 ---
 
-## 📉 Measured Benchmark Results
+## Contributing
 
-On `BenchmarkRequestBatchArenaVsHeap`, the arena path hit the headline result:
-**`0 B/op` and `0 allocs/op`.**
-
-Measured output on this machine:
-
-```text
-BenchmarkRequestBatchArenaVsHeap/Heap-16         	  804920	      1601 ns/op	    1776 B/op	      24 allocs/op
-BenchmarkRequestBatchArenaVsHeap/Arena-16        	 1000000	      1030 ns/op	       0 B/op	       0 allocs/op
-```
-
----
-
-## 🛠️ API Stability and Versioning
-
-- Current module API version: `v0.1.0` (`rustygo.Version`)
-- Stability contract:
-  - `v0.x`: API may evolve between minor versions.
-  - `v1.x+`: backward-compatible API by default.
-
-## Test Layout
-
-See `rustygo_test/TEST_CLASSIFICATION.md` for categorized tests and benchmarks.
+The repository is structured as follows:
+- `analyzer/`: Compiler plugin entrypoint and AST rewriter.
+- `compilerplugin/`: `-toolexec` compile interceptor.
+- `internal/analysis/`: Core SSA flow checker packages.
