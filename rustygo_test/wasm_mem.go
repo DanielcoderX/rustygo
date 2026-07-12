@@ -318,7 +318,7 @@ func main() {
 	}
 
 	// Scaled Rustygo's internal Arena space to 2.5GB to accommodate the massive 55M structs safely.
-	outBytes, changed, err := analyzer.RewriteFileWithConfig(pkg.Fset, pkg.Syntax[0], pkg.TypesInfo, pkg.PkgPath, analyzer.RewriteConfig{ArenaBytes: 2500 * 1024 * 1024}, funcDecls)
+	outBytes, changed, err := analyzer.RewriteFileWithConfig(pkg.Fset, pkg.Syntax[0], pkg.Syntax, pkg.TypesInfo, pkg.PkgPath, analyzer.RewriteConfig{ArenaBytes: 2500 * 1024 * 1024}, funcDecls)
 	if err != nil {
 		panic(err)
 	}

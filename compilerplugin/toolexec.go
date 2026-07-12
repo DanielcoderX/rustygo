@@ -25,7 +25,7 @@ func IsToolExec(arg string) bool {
 	return base == "compile" || base == "link" || base == "asm" || base == "cgo" || base == "vet"
 }
 
-func ToolExec(args []string) error {
+func ToolExec(args []string) (err error) {
 	toolPath := args[0]
 	toolArgs := args[1:]
 
@@ -46,11 +46,31 @@ func ToolExec(args []string) error {
 	toolBase = strings.TrimSuffix(toolBase, ".exe")
 
 	if toolBase != "compile" {
-		// Passthrough for non-compile tools
 		return executeTool(toolPath, toolArgs)
 	}
 
-	// For compile, we need to extract the .go files, rewrite them, and swap arguments.
+	debug := os.Getenv("RUSTYGO_DEBUG") == "1"
+
+	defer func() {
+		if r := recover(); r != nil {
+			if debug {
+				fmt.Fprintf(os.Stderr, "[rustygo-debug] panic recovered: %v\n", r)
+			}
+			err = executeTool(toolPath, toolArgs)
+		}
+	}()
+
+	err = runRewriteAndCompile(toolPath, toolArgs, debug)
+	if err != nil {
+		if debug {
+			fmt.Fprintf(os.Stderr, "[rustygo-debug] rewrite failed, falling back: %v\n", err)
+		}
+		return executeTool(toolPath, toolArgs)
+	}
+	return nil
+}
+
+func runRewriteAndCompile(toolPath string, toolArgs []string, debug bool) error {
 	var goFiles []string
 	var goFileIndices []int
 
@@ -65,14 +85,10 @@ func ToolExec(args []string) error {
 		return executeTool(toolPath, toolArgs)
 	}
 
-	// Create a temporary directory for rewritten files
 	tempDir, err := os.MkdirTemp("", "rustygoc-toolexec-*")
 	if err != nil {
 		return err
 	}
-	// We don't defer os.RemoveAll(tempDir) because the compile command might be run later or fail
-	// Usually toolexec wrappers can clean up, but let's keep it simple or defer and wait.
-	// defer os.RemoveAll(tempDir)
 
 	arenaBytes := 256 * 1024
 	if env := os.Getenv("RUSTYGO_ARENA_BYTES"); env != "" {
@@ -82,11 +98,6 @@ func ToolExec(args []string) error {
 	}
 	rewriteCfg := analyzer.RewriteConfig{ArenaBytes: arenaBytes}
 
-	// We need type information to do safe rewrites.
-	// Since we are running on isolated files from the command line, we can load them as a package.
-	// This can be tricky if they rely on other files not in this compile invocation,
-	// but standard go build passes all package files to compile.
-	// Extract the package path being compiled
 	var pkgPath string
 	for i, arg := range toolArgs {
 		if arg == "-p" && i+1 < len(toolArgs) {
@@ -95,8 +106,6 @@ func ToolExec(args []string) error {
 		}
 	}
 
-	// We ONLY want to rewrite packages in our module, or main.
-	// We definitely do not want to rewrite standard library (internal/*, sync/*, runtime/*, etc)
 	if pkgPath != "" && !strings.Contains(pkgPath, ".") && !strings.Contains(pkgPath, "rustygo") && pkgPath != "main" && pkgPath != "command-line-arguments" {
 		return executeTool(toolPath, toolArgs)
 	}
@@ -111,11 +120,6 @@ func ToolExec(args []string) error {
 	
 	pkg := pkgs[0]
 	
-	// Ignore missing function body errors that occur because assembly files aren't in goFiles.
-	// But log other errors if we want. For now, we proceed to rewrite.
-
-
-
 	funcDecls := make(map[string]*ast.FuncDecl)
 	for _, file := range pkg.Syntax {
 		ast.Inspect(file, func(n ast.Node) bool {
@@ -147,7 +151,7 @@ func ToolExec(args []string) error {
 		go func(idx int, fAST *ast.File) {
 			defer wg.Done()
 			origPath := pkg.GoFiles[idx]
-			outBytes, changed, err := analyzer.RewriteFileWithConfig(pkg.Fset, fAST, pkg.TypesInfo, pkg.PkgPath, rewriteCfg, funcDecls)
+			outBytes, changed, err := analyzer.RewriteFileWithConfig(pkg.Fset, fAST, pkg.Syntax, pkg.TypesInfo, pkg.PkgPath, rewriteCfg, funcDecls)
 			if err != nil {
 				resChan <- result{err: err}
 				return

@@ -29,15 +29,15 @@ func RewriteFile(fset *token.FileSet, file *ast.File, info *types.Info, pkgPath 
 		}
 		return true
 	})
-	return RewriteFileWithConfig(fset, file, info, pkgPath, RewriteConfig{}, funcDecls)
+	return RewriteFileWithConfig(fset, file, []*ast.File{file}, info, pkgPath, RewriteConfig{}, funcDecls)
 }
 
-func RewriteFileWithConfig(fset *token.FileSet, file *ast.File, info *types.Info, pkgPath string, cfg RewriteConfig, funcDecls map[string]*ast.FuncDecl) ([]byte, bool, error) {
+func RewriteFileWithConfig(fset *token.FileSet, file *ast.File, files []*ast.File, info *types.Info, pkgPath string, cfg RewriteConfig, funcDecls map[string]*ast.FuncDecl) ([]byte, bool, error) {
 	if isGenerated(file) {
 		return nil, false, nil
 	}
 
-	sites := filterEligibleSites(collectSites(file, info), info, funcDecls)
+	sites := filterEligibleSites(fset, file, files, info, collectSites(file, info), funcDecls)
 	byBody := map[*ast.BlockStmt][]site{}
 	for _, site := range sites {
 		if !site.fixable || site.body == nil || site.exprPtr == nil {

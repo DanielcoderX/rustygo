@@ -67,7 +67,7 @@ func runFixMode(args []string) error {
 			})
 		}
 		for i, file := range pkg.Syntax {
-			out, ok, err := analyzer.RewriteFileWithConfig(pkg.Fset, file, pkg.TypesInfo, pkg.PkgPath, rewriteCfg, funcDecls)
+			out, ok, err := analyzer.RewriteFileWithConfig(pkg.Fset, file, pkg.Syntax, pkg.TypesInfo, pkg.PkgPath, rewriteCfg, funcDecls)
 			if err != nil {
 				return err
 			}

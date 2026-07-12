@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
+	"golang.org/x/tools/go/ssa"
 )
 
 var Analyzer = &analysis.Analyzer{
@@ -63,14 +64,13 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		})
 	}
 
-
 	for _, file := range pass.Files {
 		if isGenerated(file) {
 			continue
 		}
 		allSites := collectSites(file, pass.TypesInfo)
 		result.Total += len(allSites)
-		for _, site := range filterEligibleSites(allSites, pass.TypesInfo, funcDecls) {
+		for _, site := range filterEligibleSites(pass.Fset, file, pass.Files, pass.TypesInfo, allSites, funcDecls) {
 			result.Eligible++
 			pass.Reportf(site.pos, "[rustygo] %s(%s) is arena-eligible", site.kind, site.typeName)
 			result.Findings = append(result.Findings, Finding{
@@ -111,19 +111,301 @@ func collectSites(file *ast.File, info *types.Info) []site {
 	return sites
 }
 
-func filterEligibleSites(candidates []site, info *types.Info, funcDecls map[string]*ast.FuncDecl) []site {
+func getPackage(info *types.Info, file *ast.File) *types.Package {
+	for _, obj := range info.Defs {
+		if obj != nil && obj.Pkg() != nil {
+			return obj.Pkg()
+		}
+	}
+	for _, obj := range info.Uses {
+		if obj != nil && obj.Pkg() != nil {
+			return obj.Pkg()
+		}
+	}
+	if file.Name != nil {
+		return types.NewPackage(file.Name.Name, file.Name.Name)
+	}
+	return types.NewPackage("main", "main")
+}
+
+func registerImports(prog *ssa.Program, pkg *types.Package, visited map[*types.Package]bool) {
+	if visited[pkg] {
+		return
+	}
+	visited[pkg] = true
+	for _, imp := range pkg.Imports() {
+		prog.CreatePackage(imp, nil, nil, true)
+		registerImports(prog, imp, visited)
+	}
+}
+
+func filterEligibleSites(fset *token.FileSet, file *ast.File, files []*ast.File, info *types.Info, candidates []site, funcDecls map[string]*ast.FuncDecl) []site {
+	pkg := getPackage(info, file)
+	prog := ssa.NewProgram(fset, 0)
+	registerImports(prog, pkg, make(map[*types.Package]bool))
+	ssaPkg := prog.CreatePackage(pkg, files, info, true)
+	ssaPkg.Build()
+
+	var allFuncs []*ssa.Function
+	var collectFuncs func(fn *ssa.Function)
+	collectFuncs = func(fn *ssa.Function) {
+		allFuncs = append(allFuncs, fn)
+		for _, anon := range fn.AnonFuncs {
+			collectFuncs(anon)
+		}
+	}
+	for _, member := range ssaPkg.Members {
+		if fn, ok := member.(*ssa.Function); ok {
+			collectFuncs(fn)
+		}
+	}
+
+	paramEscapes := make(map[*ssa.Parameter]bool)
+	for {
+		changed := false
+		for _, fn := range allFuncs {
+			for _, param := range fn.Params {
+				if paramEscapes[param] {
+					continue
+				}
+				visited := make(map[ssa.Value]bool)
+				if ssaValueEscapes(param, paramEscapes, visited) {
+					paramEscapes[param] = true
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+
+	var allocations []ssa.Value
+	for _, fn := range allFuncs {
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				switch x := instr.(type) {
+				case *ssa.Alloc:
+					allocations = append(allocations, x)
+				case *ssa.MakeSlice:
+					allocations = append(allocations, x)
+				case *ssa.MakeMap:
+					allocations = append(allocations, x)
+				case *ssa.MakeChan:
+					allocations = append(allocations, x)
+				}
+			}
+		}
+	}
+
 	var eligible []site
 	for _, candidate := range candidates {
-		visited := make(map[*types.Var]bool)
-		if candidate.target != nil {
-			visited[candidate.target] = true
+		var matchingAlloc ssa.Value
+		for _, alloc := range allocations {
+			posAlloc := fset.Position(alloc.Pos())
+			posCand := fset.Position(candidate.pos)
+			if posAlloc.Line == posCand.Line && posAlloc.Filename == posCand.Filename {
+				matchingAlloc = alloc
+				break
+			}
 		}
-		if candidate.target == nil || candidateEscapes(candidate.body, info, candidate.target, funcDecls, visited) {
+
+		if matchingAlloc == nil {
 			continue
 		}
-		eligible = append(eligible, candidate)
+
+		visited := make(map[ssa.Value]bool)
+		if !ssaValueEscapes(matchingAlloc, paramEscapes, visited) {
+			eligible = append(eligible, candidate)
+		}
 	}
 	return eligible
+}
+
+func ssaValueEscapes(v ssa.Value, paramEscapes map[*ssa.Parameter]bool, visited map[ssa.Value]bool) bool {
+	if v == nil {
+		return false
+	}
+	if visited[v] {
+		return false
+	}
+	visited[v] = true
+
+	fn := v.Parent()
+	if fn == nil {
+		return true
+	}
+
+	var uses []ssa.Instruction
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			for _, op := range instr.Operands(nil) {
+				if op != nil && *op == v {
+					uses = append(uses, instr)
+					break
+				}
+			}
+		}
+	}
+
+	for _, instr := range uses {
+		switch x := instr.(type) {
+		case *ssa.Return:
+			return true
+
+		case *ssa.Store:
+			if x.Val == v {
+				root := getRoot(x.Addr)
+				if root == nil {
+					return true
+				}
+				if _, ok := root.(*ssa.Global); ok {
+					return true
+				}
+				if p, ok := root.(*ssa.Parameter); ok {
+					if paramEscapes[p] {
+						return true
+					}
+					if ssaValueEscapes(p, paramEscapes, visited) {
+						return true
+					}
+				}
+				if root != v && ssaValueEscapes(root, paramEscapes, visited) {
+					return true
+				}
+			}
+
+		case *ssa.Send:
+			if x.X == v {
+				return true
+			}
+
+		case *ssa.Call:
+			argIdx := -1
+			for idx, arg := range x.Call.Args {
+				if arg == v {
+					argIdx = idx
+					break
+				}
+			}
+			if argIdx >= 0 {
+				if x.Call.Value != nil {
+					if builtin, ok := x.Call.Value.(*ssa.Builtin); ok {
+						if builtin.Name() == "len" || builtin.Name() == "cap" || builtin.Name() == "append" {
+							continue
+						}
+					}
+				}
+				callee := x.Call.StaticCallee()
+				if callee != nil {
+					if callee.Pkg != nil && callee.Pkg.Pkg.Path() == fn.Pkg.Pkg.Path() {
+						if argIdx < len(callee.Params) {
+							param := callee.Params[argIdx]
+							if paramEscapes[param] {
+								return true
+							}
+							if ssaValueEscapes(param, paramEscapes, visited) {
+								return true
+							}
+						}
+					} else {
+						return true
+					}
+				} else {
+					return true
+				}
+			}
+
+		case *ssa.FieldAddr:
+			if ssaValueEscapes(x, paramEscapes, visited) {
+				return true
+			}
+		case *ssa.IndexAddr:
+			if ssaValueEscapes(x, paramEscapes, visited) {
+				return true
+			}
+		case *ssa.Slice:
+			if ssaValueEscapes(x, paramEscapes, visited) {
+				return true
+			}
+
+		case *ssa.Field:
+			if hasPointers(x.Type()) && ssaValueEscapes(x, paramEscapes, visited) {
+				return true
+			}
+		case *ssa.Index:
+			if hasPointers(x.Type()) && ssaValueEscapes(x, paramEscapes, visited) {
+				return true
+			}
+		case *ssa.UnOp:
+			if x.Op == token.MUL {
+				if hasPointers(x.Type()) && ssaValueEscapes(x, paramEscapes, visited) {
+					return true
+				}
+			} else if x.Op == token.ARROW {
+				// Receive from channel does not make the channel escape
+				continue
+			} else {
+				if ssaValueEscapes(x, paramEscapes, visited) {
+					return true
+				}
+			}
+		case *ssa.BinOp:
+			if ssaValueEscapes(x, paramEscapes, visited) {
+				return true
+			}
+		case *ssa.ChangeType:
+			if ssaValueEscapes(x, paramEscapes, visited) {
+				return true
+			}
+		case *ssa.Convert:
+			if ssaValueEscapes(x, paramEscapes, visited) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func getRoot(v ssa.Value) ssa.Value {
+	if v == nil {
+		return nil
+	}
+	switch x := v.(type) {
+	case *ssa.FieldAddr:
+		return getRoot(x.X)
+	case *ssa.IndexAddr:
+		return getRoot(x.X)
+	case *ssa.Field:
+		return getRoot(x.X)
+	case *ssa.Index:
+		return getRoot(x.X)
+	case *ssa.UnOp:
+		if x.Op == token.MUL {
+			return getRoot(x.X)
+		}
+	}
+	return v
+}
+
+func hasPointers(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	switch ut := t.Underlying().(type) {
+	case *types.Pointer, *types.Signature, *types.Map, *types.Chan, *types.Slice, *types.Interface:
+		return true
+	case *types.Struct:
+		for i := 0; i < ut.NumFields(); i++ {
+			if hasPointers(ut.Field(i).Type()) {
+				return true
+			}
+		}
+	case *types.Array:
+		return hasPointers(ut.Elem())
+	}
+	return false
 }
 
 type candidateVisitor struct {
@@ -284,7 +566,7 @@ func makeSite(obj *types.Var, body *ast.BlockStmt, exprPtr *ast.Expr, info *type
 					pos:      expr.Pos(),
 					end:      expr.End(),
 					kind:     "make_map",
-					typeName: shortTypeString(uxtMapString(ut)),
+					typeName: shortTypeString(ut),
 					target:   obj,
 					fixable:  true,
 					body:     body,
@@ -357,221 +639,6 @@ func makeSite(obj *types.Var, body *ast.BlockStmt, exprPtr *ast.Expr, info *type
 		}
 	}
 	return site{}, false
-}
-
-func uxtMapString(m *types.Map) types.Type {
-	return m
-}
-
-func candidateEscapes(body *ast.BlockStmt, info *types.Info, obj *types.Var, funcDecls map[string]*ast.FuncDecl, visited map[*types.Var]bool) bool {
-	escapes := false
-
-	ast.Inspect(body, func(n ast.Node) bool {
-		if escapes {
-			return false
-		}
-
-		if n == nil {
-			return true
-		}
-
-		switch node := n.(type) {
-		case *ast.GoStmt:
-			if usesObject(node, info, obj) {
-				escapes = true
-				return false
-			}
-		case *ast.DeferStmt:
-			if usesObject(node, info, obj) {
-				escapes = true
-				return false
-			}
-		case *ast.FuncLit:
-			if usesObject(node, info, obj) {
-				escapes = true
-				return false
-			}
-		case *ast.ReturnStmt:
-			for _, result := range node.Results {
-				if escapingValueUse(result, info, obj) {
-					escapes = true
-					return false
-				}
-			}
-		case *ast.AssignStmt:
-			for _, rhs := range node.Rhs {
-				if escapingValueUse(rhs, info, obj) {
-					escapes = true
-					return false
-				}
-			}
-		case *ast.CallExpr:
-			if builtinSafeCall(node, info, obj) {
-				return true
-			}
-			
-			var targetFunc *types.Func
-			switch fun := unparen(node.Fun).(type) {
-			case *ast.Ident:
-				if f, ok := info.ObjectOf(fun).(*types.Func); ok {
-					targetFunc = f
-				}
-			case *ast.SelectorExpr:
-				if f, ok := info.ObjectOf(fun.Sel).(*types.Func); ok {
-					targetFunc = f
-				}
-			}
-			
-			var fd *ast.FuncDecl
-			var hasBody bool
-			if targetFunc != nil {
-				fd, hasBody = funcDecls[targetFunc.FullName()]
-			}
-			var sig *types.Signature
-			if targetFunc != nil {
-				sig, _ = targetFunc.Type().(*types.Signature)
-			}
-			
-			for argIdx, arg := range node.Args {
-				if escapingValueUse(arg, info, obj) {
-					if hasBody && fd.Body != nil && sig != nil && argIdx < sig.Params().Len() {
-						paramVar := sig.Params().At(argIdx)
-						if !visited[paramVar] {
-							visitedCopy := make(map[*types.Var]bool)
-							for k, v := range visited {
-								visitedCopy[k] = v
-							}
-							visitedCopy[paramVar] = true
-							if !candidateEscapes(fd.Body, info, paramVar, funcDecls, visitedCopy) {
-								continue
-							}
-						}
-					}
-					escapes = true
-					return false
-				}
-			}
-		case *ast.SendStmt:
-			if escapingValueUse(node.Value, info, obj) {
-				escapes = true
-				return false
-			}
-		case *ast.UnaryExpr:
-			if node.Op == token.AND && rootedInObject(node.X, info, obj) {
-				escapes = true
-				return false
-			}
-		}
-
-		return true
-	})
-
-	return escapes
-}
-
-func usesObject(node ast.Node, info *types.Info, obj *types.Var) bool {
-	used := false
-	ast.Inspect(node, func(n ast.Node) bool {
-		if used {
-			return false
-		}
-		if ident, ok := n.(*ast.Ident); ok {
-			if use, ok := info.ObjectOf(ident).(*types.Var); ok && use == obj {
-				used = true
-				return false
-			}
-		}
-		return true
-	})
-	return used
-}
-
-func builtinSafeCall(call *ast.CallExpr, info *types.Info, obj *types.Var) bool {
-	ident, ok := call.Fun.(*ast.Ident)
-	if !ok {
-		return false
-	}
-	if ident.Name != "len" && ident.Name != "cap" {
-		return false
-	}
-	if len(call.Args) != 1 {
-		return false
-	}
-	return directUseOf(call.Args[0], info, obj)
-}
-
-func escapingValueUse(expr ast.Expr, info *types.Info, obj *types.Var) bool {
-	switch expr := unparen(expr).(type) {
-	case *ast.Ident:
-		return directUseOf(expr, info, obj)
-	case *ast.CompositeLit:
-		for _, elt := range expr.Elts {
-			if escapingValueUse(elt, info, obj) {
-				return true
-			}
-		}
-	case *ast.KeyValueExpr:
-		return escapingValueUse(expr.Key, info, obj) || escapingValueUse(expr.Value, info, obj)
-	case *ast.CallExpr:
-		return false
-	case *ast.SelectorExpr:
-		if directUseOf(expr.X, info, obj) {
-			return false
-		}
-		return escapingValueUse(expr.X, info, obj)
-	case *ast.IndexExpr:
-		if rootedInObject(expr.X, info, obj) {
-			return false
-		}
-		return escapingValueUse(expr.X, info, obj) || escapingValueUse(expr.Index, info, obj)
-	case *ast.IndexListExpr:
-		if rootedInObject(expr.X, info, obj) {
-			return false
-		}
-		if escapingValueUse(expr.X, info, obj) {
-			return true
-		}
-		for _, index := range expr.Indices {
-			if escapingValueUse(index, info, obj) {
-				return true
-			}
-		}
-		return false
-	case *ast.SliceExpr:
-		return rootedInObject(expr.X, info, obj)
-	case *ast.TypeAssertExpr:
-		return directUseOf(expr.X, info, obj)
-	case *ast.UnaryExpr:
-		if expr.Op == token.AND {
-			return rootedInObject(expr.X, info, obj)
-		}
-	}
-	return false
-}
-
-func rootedInObject(expr ast.Expr, info *types.Info, obj *types.Var) bool {
-	switch expr := unparen(expr).(type) {
-	case *ast.Ident:
-		return directUseOf(expr, info, obj)
-	case *ast.SelectorExpr:
-		return rootedInObject(expr.X, info, obj)
-	case *ast.IndexExpr:
-		return rootedInObject(expr.X, info, obj)
-	case *ast.IndexListExpr:
-		return rootedInObject(expr.X, info, obj)
-	case *ast.SliceExpr:
-		return rootedInObject(expr.X, info, obj)
-	}
-	return false
-}
-
-func directUseOf(expr ast.Expr, info *types.Info, obj *types.Var) bool {
-	ident, ok := unparen(expr).(*ast.Ident)
-	if !ok {
-		return false
-	}
-	use, ok := info.ObjectOf(ident).(*types.Var)
-	return ok && use == obj
 }
 
 func unparen(expr ast.Expr) ast.Expr {
