@@ -457,12 +457,36 @@ func SliceCap[T any](r *Region, length, capacity int) []T {
 	return AllocSliceCap[T](r.scope, length, capacity)
 }
 
+// HasPointersReflect reports whether type t contains pointers that require GC scanning.
+func HasPointersReflect(t reflect.Type) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Chan, reflect.Interface, reflect.Func, reflect.String, reflect.UnsafePointer:
+		return true
+	case reflect.Struct:
+		for i := 0; i < t.NumField(); i++ {
+			if HasPointersReflect(t.Field(i).Type) {
+				return true
+			}
+		}
+	case reflect.Array:
+		return HasPointersReflect(t.Elem())
+	}
+	return false
+}
+
 // AllocValue allocates storage for a single T through the scope.
 func AllocValue[T any](s *Scope) *T {
 	if !s.Active() {
 		panic("scope is not active")
 	}
 	var zero T
+	t := reflect.TypeOf(zero)
+	if t != nil && HasPointersReflect(t) {
+		return new(T)
+	}
 	size := int(unsafe.Sizeof(zero))
 	if size == 0 {
 		return new(T)
@@ -487,6 +511,10 @@ func AllocSliceCap[T any](s *Scope, length, capacity int) []T {
 		panic("invalid slice bounds")
 	}
 	var zero T
+	t := reflect.TypeOf(zero)
+	if t != nil && HasPointersReflect(t) {
+		return make([]T, length, capacity)
+	}
 	size := int(unsafe.Sizeof(zero))
 	if size == 0 {
 		return make([]T, length, capacity)

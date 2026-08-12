@@ -2,10 +2,24 @@ package escape
 
 import (
 	"fmt"
+	"go/types"
 
 	"rustygo/internal/analysis/allocation"
 	"rustygo/internal/analysis/lifetime"
 )
+
+func allocatedElemType(t types.Type) types.Type {
+	if t == nil {
+		return nil
+	}
+	switch ut := t.Underlying().(type) {
+	case *types.Pointer:
+		return ut.Elem()
+	case *types.Slice:
+		return ut.Elem()
+	}
+	return t
+}
 
 // Classify maps allocation and lifetime results into optimization decisions.
 func Classify(allocs *allocation.Result, lifetimes *lifetime.LifetimeResult) []AllocationDecision {
@@ -23,8 +37,13 @@ func Classify(allocs *allocation.Result, lifetimes *lifetime.LifetimeResult) []A
 			path = report.References
 			switch report.LifetimeState {
 			case lifetime.Safe:
-				dec = Arena
-				reason = None
+				if lifetime.HasPointers(allocatedElemType(alloc.Type)) {
+					dec = Heap
+					reason = EscapesUnsafe
+				} else {
+					dec = Arena
+					reason = None
+				}
 			case lifetime.Unsafe:
 				dec = Heap
 				reason = mapViolation(report.LifetimeViolations)

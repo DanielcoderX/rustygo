@@ -2,6 +2,7 @@ package rustygo_test
 
 import (
 	"errors"
+	"reflect"
 	rg "rustygo"
 	"strings"
 	"sync"
@@ -220,6 +221,44 @@ func TestScopeAllocValue(t *testing.T) {
 	p.ID = 7
 	if p.ID != 7 {
 		t.Fatalf("expected stored value to round-trip, got %d", p.ID)
+	}
+}
+
+func TestScopeAllocPointerSafety(t *testing.T) {
+	type ptrPacket struct {
+		Ptr *int
+		Str string
+	}
+	type plainPacket struct {
+		ID int
+	}
+
+	scope := rg.NewArena(128).EnterScope()
+	defer scope.Exit()
+
+	val := 42
+	pkt := rg.AllocValue[ptrPacket](scope)
+	pkt.Ptr = &val
+	pkt.Str = "safe"
+
+	if *pkt.Ptr != 42 || pkt.Str != "safe" {
+		t.Fatalf("expected pointer packet to round-trip safely, got %v, %s", *pkt.Ptr, pkt.Str)
+	}
+
+	slice := rg.AllocSlice[ptrPacket](scope, 2)
+	slice[0].Ptr = &val
+	if *slice[0].Ptr != 42 {
+		t.Fatalf("expected slice pointer packet to round-trip safely")
+	}
+
+	var zeroPtr ptrPacket
+	var zeroPlain plainPacket
+
+	if !rg.HasPointersReflect(reflect.TypeOf(zeroPtr)) {
+		t.Fatal("expected ptrPacket to be flagged as containing pointers")
+	}
+	if rg.HasPointersReflect(reflect.TypeOf(zeroPlain)) {
+		t.Fatal("expected plainPacket to NOT be flagged as containing pointers")
 	}
 }
 
