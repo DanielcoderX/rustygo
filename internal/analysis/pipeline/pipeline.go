@@ -6,6 +6,7 @@ import (
 	"rustygo/internal/analysis/allocation"
 	"rustygo/internal/analysis/escape"
 	"rustygo/internal/analysis/lifetime"
+	"rustygo/internal/analysis/summary"
 )
 
 // AnalysisResult holds the compiled findings from the complete analysis pipeline.
@@ -17,13 +18,16 @@ type AnalysisResult struct {
 
 // Run executes the complete analysis pipeline sequentially over an SSA program.
 func Run(program *ssa.Program) (*AnalysisResult, error) {
-	// 1. Allocation Discovery
+	// 1. Function Summaries
+	summary.AnalyzeSummaries(program)
+
+	// 2. Allocation Discovery
 	allocRes, err := allocation.Analyze(program)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. Lifetime Analysis
+	// 3. Lifetime Analysis
 	lifetimeRes, err := lifetime.Analyze(program)
 	if err != nil {
 		return nil, err

@@ -2,6 +2,7 @@ package lifetime
 
 import (
 	"go/token"
+	"go/types"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -62,4 +63,24 @@ type LifetimeResult struct {
 	Reports     map[string]*LifetimeReport
 	Violations  []string
 	ResultState LifetimeState
+}
+
+// HasPointers returns true if type t can contain pointers.
+func HasPointers(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	switch ut := t.Underlying().(type) {
+	case *types.Pointer, *types.Signature, *types.Map, *types.Chan, *types.Slice, *types.Interface:
+		return true
+	case *types.Struct:
+		for i := 0; i < ut.NumFields(); i++ {
+			if HasPointers(ut.Field(i).Type()) {
+				return true
+			}
+		}
+	case *types.Array:
+		return HasPointers(ut.Elem())
+	}
+	return false
 }

@@ -74,8 +74,8 @@ RustyGo implements a strict safety verification model based on lexical lifetimes
 [x] Ownership analysis
 [x] Allocation discovery
 [x] Escape classification
-[ ] Function summaries
-[ ] Arena rewrite pass
+[x] Function summaries
+[x] Arena rewrite pass
 [ ] Compiler integration
 ```
 

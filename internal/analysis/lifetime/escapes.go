@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"golang.org/x/tools/go/ssa"
+
+	"rustygo/internal/analysis/summary"
 )
 
 // CheckEscape traverses the lifetime graph from an allocation node to detect escapes.
@@ -57,8 +59,26 @@ func CheckEscape(g *LifetimeGraph, allocNode *GraphNode, tracker *OwnershipTrack
 				return true
 
 			case *ssa.Call:
-				// If external call or dynamic call
 				callee := x.Call.StaticCallee()
+				if callee != nil {
+					s := summary.GetSummary(callee)
+					if s != nil {
+						argEscapes := false
+						for idx, arg := range x.Call.Args {
+							if curr.Val != nil && arg == curr.Val && idx < len(s.Params) {
+								if s.Params[idx].Escapes {
+									argEscapes = true
+									break
+								}
+							}
+						}
+						if argEscapes {
+							state = Unsafe
+							violations = append(violations, UnknownCall)
+							reason = fmt.Sprintf("Passed to function %s where parameter escapes", callee.Name())
+						}
+					}
+				}
 				if callee == nil || callee.Pkg == nil {
 					state = Unknown
 					violations = append(violations, UnknownCall)

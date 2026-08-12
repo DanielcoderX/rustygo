@@ -2,6 +2,7 @@ package lifetime
 
 import (
 	"fmt"
+	"go/token"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -218,10 +219,19 @@ func analyzeFuncInternal(fn *ssa.Function) *LifetimeResult {
 				}
 
 			case *ssa.UnOp:
-				xNode := g.GetOrCreateNode(x.X, nil, "x")
-				valNode := g.GetOrCreateNode(val, nil, val.Name())
-				g.AddEdge(xNode, valNode, "UnOp")
-				tracker.AddAlias(val, x.X)
+				if x.Op == token.MUL {
+					if HasPointers(x.Type()) {
+						xNode := g.GetOrCreateNode(x.X, nil, "x")
+						valNode := g.GetOrCreateNode(val, nil, val.Name())
+						g.AddEdge(xNode, valNode, "UnOp")
+						tracker.AddAlias(val, x.X)
+					}
+				} else {
+					xNode := g.GetOrCreateNode(x.X, nil, "x")
+					valNode := g.GetOrCreateNode(val, nil, val.Name())
+					g.AddEdge(xNode, valNode, "UnOp")
+					tracker.AddAlias(val, x.X)
+				}
 
 			case *ssa.BinOp:
 				xNode := g.GetOrCreateNode(x.X, nil, "x")
