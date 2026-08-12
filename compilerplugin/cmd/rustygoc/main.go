@@ -41,6 +41,7 @@ func runBuild(args []string) error {
 	fs := flag.NewFlagSet("rustygoc build", flag.ContinueOnError)
 	arenaBytes := fs.Int("arena-bytes", 1024*1024, "arena size inserted into rewritten functions")
 	output := fs.String("o", "", "build output path")
+	explain := fs.Bool("rustygo-explain", false, "print interactive SSA analysis decisions to terminal output")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -66,7 +67,11 @@ func runBuild(args []string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-	cmd.Env = append(os.Environ(), fmt.Sprintf("RUSTYGO_ARENA_BYTES=%d", *arenaBytes))
+	env := append(os.Environ(), fmt.Sprintf("RUSTYGO_ARENA_BYTES=%d", *arenaBytes))
+	if *explain {
+		env = append(env, "RUSTYGO_EXPLAIN=1")
+	}
+	cmd.Env = env
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("go build failed: %w", err)

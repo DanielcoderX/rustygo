@@ -12,8 +12,11 @@ import (
 	"sync"
 
 	"rustygo/analyzer"
+	"rustygo/internal/analysis/escape"
+	"rustygo/internal/analysis/pipeline"
 
 	"golang.org/x/tools/go/packages"
+	"golang.org/x/tools/go/ssa"
 )
 
 // IsToolExec returns true if the first argument looks like a tool path invoked via -toolexec.
@@ -120,6 +123,26 @@ func runRewriteAndCompile(toolPath string, toolArgs []string, debug bool) error 
 	
 	pkg := pkgs[0]
 	
+	if os.Getenv("RUSTYGO_EXPLAIN") != "" {
+		prog := ssa.NewProgram(pkg.Fset, 0)
+		ssaPkg := prog.CreatePackage(pkg.Types, pkg.Syntax, pkg.TypesInfo, true)
+		ssaPkg.Build()
+		res, err := pipeline.Run(prog)
+		if err == nil {
+			for _, dec := range res.Decisions {
+				pos := pkg.Fset.Position(dec.Allocation.Instruction.Pos())
+				switch dec.Decision {
+				case escape.Arena:
+					fmt.Printf("[SAFE]   %s:%d: Allocation of '%s' -> Bound to Thread-Local Arena\n", filepath.Base(pos.Filename), pos.Line, dec.Allocation.Type.String())
+				case escape.Heap:
+					fmt.Printf("[UNSAFE] %s:%d: Allocation of '%s' Escapes -> Reason: %v\n", filepath.Base(pos.Filename), pos.Line, dec.Allocation.Type.String(), dec.Reason)
+				case escape.Unknown:
+					fmt.Printf("[UNKNOWN] %s:%d: Allocation of '%s' -> Lifetime unproven\n", filepath.Base(pos.Filename), pos.Line, dec.Allocation.Type.String())
+				}
+			}
+		}
+	}
+
 	funcDecls := make(map[string]*ast.FuncDecl)
 	for _, file := range pkg.Syntax {
 		ast.Inspect(file, func(n ast.Node) bool {
