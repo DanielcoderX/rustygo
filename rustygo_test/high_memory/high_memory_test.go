@@ -27,6 +27,10 @@ func BenchmarkArenaHighMemory(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		size := rand.Intn(1024) + 256 // allocate 256~1280 bytes
+		used, capacity := arena.Stats()
+		if used+size > capacity {
+			arena.Reset()
+		}
 		_ = arena.Alloc(size)
 	}
 

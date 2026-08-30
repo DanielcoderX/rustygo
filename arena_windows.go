@@ -35,7 +35,8 @@ func allocArenaBuffer(size int) ([]byte, func([]byte) error, error) {
 		return nil, nil, err
 	}
 
-	buf := unsafe.Slice((*byte)(unsafe.Pointer(addr)), size)
+	ptr := *(*unsafe.Pointer)(unsafe.Pointer(&addr))
+	buf := unsafe.Slice((*byte)(ptr), size)
 	return buf, func(buf []byte) error {
 		if len(buf) == 0 {
 			return nil

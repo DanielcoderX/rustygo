@@ -59,30 +59,40 @@ func CheckEscape(g *LifetimeGraph, allocNode *GraphNode, tracker *OwnershipTrack
 				return true
 
 			case *ssa.Call:
-				callee := x.Call.StaticCallee()
-				if callee != nil {
-					s := summary.GetSummary(callee)
-					if s != nil {
-						argEscapes := false
-						for idx, arg := range x.Call.Args {
-							if curr.Val != nil && arg == curr.Val && idx < len(s.Params) {
-								if s.Params[idx].Escapes {
-									argEscapes = true
-									break
-								}
-							}
-						}
-						if argEscapes {
-							state = Unsafe
-							violations = append(violations, UnknownCall)
-							reason = fmt.Sprintf("Passed to function %s where parameter escapes", callee.Name())
-						}
+				if builtin, ok := x.Call.Value.(*ssa.Builtin); ok {
+					if builtin.Name() == "len" || builtin.Name() == "cap" {
+						break
 					}
 				}
+				callee := x.Call.StaticCallee()
 				if callee == nil || callee.Pkg == nil {
 					state = Unknown
 					violations = append(violations, UnknownCall)
 					reason = "Passed to unknown or external function call"
+					return true
+				}
+				s := summary.GetSummary(callee)
+				if s == nil || !s.HasBody || s.IsExternal {
+					state = Unknown
+					violations = append(violations, UnknownCall)
+					reason = fmt.Sprintf("Passed to function %s with no available summary", callee.Name())
+					return true
+				}
+				argEscapes := false
+				for idx, arg := range x.Call.Args {
+					if idx < len(s.Params) {
+						if isArgumentMatched(arg, allocNode.Val, tracker) {
+							if s.Params[idx].Escapes {
+								argEscapes = true
+								break
+							}
+						}
+					}
+				}
+				if argEscapes {
+					state = Unsafe
+					violations = append(violations, UnknownCall)
+					reason = fmt.Sprintf("Passed to function %s where parameter escapes", callee.Name())
 					return true
 				}
 
@@ -120,4 +130,21 @@ func hasUnsafeOrReflection(t ssa.Value) bool {
 	}
 	ts := t.Type().String()
 	return ts == "unsafe.Pointer" || ts == "reflect.Value"
+}
+
+func isArgumentMatched(arg ssa.Value, allocVal ssa.Value, tracker *OwnershipTracker) bool {
+	if arg == nil || allocVal == nil {
+		return false
+	}
+	if arg == allocVal {
+		return true
+	}
+	if tracker != nil {
+		rootArg := tracker.GetRoot(arg)
+		rootAlloc := tracker.GetRoot(allocVal)
+		if rootArg != nil && rootAlloc != nil && rootArg == rootAlloc {
+			return true
+		}
+	}
+	return false
 }

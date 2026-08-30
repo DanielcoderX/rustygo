@@ -1,8 +1,8 @@
 package basic
 
 type Node struct {
-	Val  int
-	Next *Node
+	Val int
+	Tag int
 }
 
 // newLocal: result stays inside function — arena-eligible

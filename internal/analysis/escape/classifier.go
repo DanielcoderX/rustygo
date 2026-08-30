@@ -17,6 +17,8 @@ func allocatedElemType(t types.Type) types.Type {
 		return ut.Elem()
 	case *types.Slice:
 		return ut.Elem()
+	case *types.Map, *types.Chan:
+		return nil
 	}
 	return t
 }

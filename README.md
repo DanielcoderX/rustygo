@@ -48,15 +48,17 @@ flowchart TD
 ## 📊 Performance & Formal Proposal
 
 - 📜 **[PROPOSAL.md](PROPOSAL.md)**: Read our formal Go Design Proposal detailing the SSA lifetime evaluation pipeline, safety fallbacks, and zero-breaking-change guarantees.
-- ⚡ **[BENCHMARKS.md](BENCHMARKS.md)**: View empirical benchmark results comparing standard Go and RustyGo allocation overhead, GC pauses, and WebAssembly memory footprints.
+- 🏗️ **[ARCHITECTURE.md](ARCHITECTURE.md)**: Details the single source of truth static analysis pipeline and component flow.
+- ⚡ **[BENCHMARKS.md](BENCHMARKS.md)**: View comprehensive benchmark measurements, system specs, and reproduction instructions.
 
-### Benchmark Highlights
+### Benchmark Highlights (Measured: August 30, 2026 on `go1.25.2 windows/amd64`, AMD Ryzen 7 7435HS)
 
-| Benchmark Task | Standard Go (`allocs/op`) | Standard Go (`B/op`) | RustyGo (`allocs/op`) | RustyGo (`B/op`) | GC Pause Reduction | Footprint Reduction |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Hot-Loop Allocation** | 1,000,000 | 64 MB | **0** | **0 B** | **-98%** | **-99.9%** |
-| **JSON Pipeline Pass** | 15,000 | 1.2 MB | **1,200** | **140 KB** | **-85%** | **-88.3%** |
-| **WASM Task Processing** | 850 | 48 KB | **0** | **0 B** | **-100%** | **-99.7%** (25GB $\rightarrow$ 11MB) |
+| Strategy | Latency (`ns/op`) | Memory (`B/op`) | Heap Allocs (`allocs/op`) | Speedup vs Heap |
+| :--- | :--- | :--- | :--- | :--- |
+| **RustyGo Thread-Local Arena (`Arena.TryAlloc`)** | **9.45 ns** | **0 B** | **0 allocs** | **~5.38x faster** |
+| **Standard Heap Allocation (`make([]byte, 256)`)** | **50.80 ns** | **256 B** | **1 allocs** | Baseline |
+
+> *Note: Microbenchmarks measure isolated allocation latency and deallocation overhead under synthetic loop conditions, not full end-to-end application throughput.*
 
 ---
 

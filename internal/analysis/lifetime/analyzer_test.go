@@ -2,6 +2,7 @@ package lifetime
 
 import (
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
 	"go/types"
@@ -9,6 +10,8 @@ import (
 	"testing"
 
 	"golang.org/x/tools/go/ssa"
+
+	"rustygo/internal/analysis/summary"
 )
 
 func buildSSA(src string) (*ssa.Package, error) {
@@ -18,7 +21,9 @@ func buildSSA(src string) (*ssa.Package, error) {
 		return nil, err
 	}
 
-	conf := types.Config{}
+	conf := types.Config{
+		Importer: importer.Default(),
+	}
 
 	info := &types.Info{
 		Types: make(map[ast.Expr]types.TypeAndValue),
@@ -32,6 +37,19 @@ func buildSSA(src string) (*ssa.Package, error) {
 	}
 
 	prog := ssa.NewProgram(fset, 0)
+	var registerImports func(*types.Package, map[*types.Package]bool)
+	registerImports = func(p *types.Package, visited map[*types.Package]bool) {
+		if visited[p] {
+			return
+		}
+		visited[p] = true
+		for _, imp := range p.Imports() {
+			prog.CreatePackage(imp, nil, nil, true)
+			registerImports(imp, visited)
+		}
+	}
+	registerImports(pkg, make(map[*types.Package]bool))
+
 	ssaPkg := prog.CreatePackage(pkg, []*ast.File{file}, info, true)
 	ssaPkg.Build()
 
@@ -123,5 +141,57 @@ func f() {
 				}
 			}
 		})
+	}
+}
+
+func TestCallSummaryHandling(t *testing.T) {
+	src := `package main
+import "fmt"
+
+func helper(p *int) {
+	_ = *p
+}
+
+func fSafe() {
+	x := new(int)
+	helper(x)
+}
+
+func fExternal() {
+	x := new(int)
+	fmt.Println(x)
+}
+`
+	pkg, err := buildSSA(src)
+	if err != nil {
+		t.Fatalf("failed to build SSA: %v", err)
+	}
+
+	summary.AnalyzeSummaries(pkg.Prog)
+	res, err := Analyze(pkg.Prog)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+
+	foundSafe := false
+	foundExternal := false
+
+	for _, r := range res.Reports {
+		if strings.Contains(r.ObjectID, "fExternal") {
+			foundExternal = true
+			if r.LifetimeState == Safe {
+				t.Errorf("external call with missing summary should NOT be Safe, got %s", r.LifetimeState)
+			}
+		}
+		if strings.Contains(r.ObjectID, "fSafe") {
+			foundSafe = true
+			if r.LifetimeState != Safe {
+				t.Errorf("helper call with non-escaping summary should be Safe, got %s (%s)", r.LifetimeState, r.EscapeReason)
+			}
+		}
+	}
+
+	if !foundSafe || !foundExternal {
+		t.Errorf("failed to locate report targets: safe=%v external=%v", foundSafe, foundExternal)
 	}
 }

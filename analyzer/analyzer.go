@@ -1,3 +1,7 @@
+// Package analyzer provides AST candidate collection and AST rewriting gates.
+// Per ARCHITECTURE.md, escape classification logic is consolidated onto internal/analysis/pipeline,
+// which serves as the single source of truth for lifetime analysis, inter-procedural function summaries,
+// and escape classification across the RustyGo toolchain.
 package analyzer
 
 import (
@@ -5,11 +9,15 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"path/filepath"
 	"reflect"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/ssa"
+
+	"rustygo/internal/analysis/escape"
+	"rustygo/internal/analysis/pipeline"
 )
 
 var Analyzer = &analysis.Analyzer{
@@ -146,266 +154,25 @@ func filterEligibleSites(fset *token.FileSet, file *ast.File, files []*ast.File,
 	ssaPkg := prog.CreatePackage(pkg, files, info, true)
 	ssaPkg.Build()
 
-	var allFuncs []*ssa.Function
-	var collectFuncs func(fn *ssa.Function)
-	collectFuncs = func(fn *ssa.Function) {
-		allFuncs = append(allFuncs, fn)
-		for _, anon := range fn.AnonFuncs {
-			collectFuncs(anon)
-		}
-	}
-	for _, member := range ssaPkg.Members {
-		if fn, ok := member.(*ssa.Function); ok {
-			collectFuncs(fn)
-		}
-	}
-
-	paramEscapes := make(map[*ssa.Parameter]bool)
-	for {
-		changed := false
-		for _, fn := range allFuncs {
-			for _, param := range fn.Params {
-				if paramEscapes[param] {
-					continue
-				}
-				visited := make(map[ssa.Value]bool)
-				if ssaValueEscapes(param, paramEscapes, visited) {
-					paramEscapes[param] = true
-					changed = true
-				}
-			}
-		}
-		if !changed {
-			break
-		}
-	}
-
-	var allocations []ssa.Value
-	for _, fn := range allFuncs {
-		for _, block := range fn.Blocks {
-			for _, instr := range block.Instrs {
-				switch x := instr.(type) {
-				case *ssa.Alloc:
-					allocations = append(allocations, x)
-				case *ssa.MakeSlice:
-					allocations = append(allocations, x)
-				case *ssa.MakeMap:
-					allocations = append(allocations, x)
-				case *ssa.MakeChan:
-					allocations = append(allocations, x)
-				}
-			}
-		}
+	res, err := pipeline.Run(prog)
+	if err != nil {
+		return nil
 	}
 
 	var eligible []site
 	for _, candidate := range candidates {
-		var matchingAlloc ssa.Value
-		for _, alloc := range allocations {
-			posAlloc := fset.Position(alloc.Pos())
-			posCand := fset.Position(candidate.pos)
-			if posAlloc.Line == posCand.Line && posAlloc.Filename == posCand.Filename {
-				matchingAlloc = alloc
-				break
+		posCand := fset.Position(candidate.pos)
+		for _, dec := range res.Decisions {
+			if dec.Decision == escape.Arena {
+				posAlloc := dec.Allocation.Position
+				if posAlloc.Line == posCand.Line && (posAlloc.Filename == posCand.Filename || filepath.Base(posAlloc.Filename) == filepath.Base(posCand.Filename)) {
+					eligible = append(eligible, candidate)
+					break
+				}
 			}
-		}
-
-		if matchingAlloc == nil {
-			continue
-		}
-
-		visited := make(map[ssa.Value]bool)
-		if !ssaValueEscapes(matchingAlloc, paramEscapes, visited) {
-			eligible = append(eligible, candidate)
 		}
 	}
 	return eligible
-}
-
-func ssaValueEscapes(v ssa.Value, paramEscapes map[*ssa.Parameter]bool, visited map[ssa.Value]bool) bool {
-	if v == nil {
-		return false
-	}
-	if visited[v] {
-		return false
-	}
-	visited[v] = true
-
-	fn := v.Parent()
-	if fn == nil {
-		return true
-	}
-
-	var uses []ssa.Instruction
-	for _, block := range fn.Blocks {
-		for _, instr := range block.Instrs {
-			for _, op := range instr.Operands(nil) {
-				if op != nil && *op == v {
-					uses = append(uses, instr)
-					break
-				}
-			}
-		}
-	}
-
-	for _, instr := range uses {
-		switch x := instr.(type) {
-		case *ssa.Return:
-			return true
-
-		case *ssa.Store:
-			if x.Val == v {
-				root := getRoot(x.Addr)
-				if root == nil {
-					return true
-				}
-				if _, ok := root.(*ssa.Global); ok {
-					return true
-				}
-				if p, ok := root.(*ssa.Parameter); ok {
-					if paramEscapes[p] {
-						return true
-					}
-					if ssaValueEscapes(p, paramEscapes, visited) {
-						return true
-					}
-				}
-				if root != v && ssaValueEscapes(root, paramEscapes, visited) {
-					return true
-				}
-			}
-
-		case *ssa.Send:
-			if x.X == v {
-				return true
-			}
-
-		case *ssa.Call:
-			argIdx := -1
-			for idx, arg := range x.Call.Args {
-				if arg == v {
-					argIdx = idx
-					break
-				}
-			}
-			if argIdx >= 0 {
-				if x.Call.Value != nil {
-					if builtin, ok := x.Call.Value.(*ssa.Builtin); ok {
-						if builtin.Name() == "len" || builtin.Name() == "cap" || builtin.Name() == "append" {
-							continue
-						}
-					}
-				}
-				callee := x.Call.StaticCallee()
-				if callee != nil {
-					if callee.Pkg != nil && callee.Pkg.Pkg.Path() == fn.Pkg.Pkg.Path() {
-						if argIdx < len(callee.Params) {
-							param := callee.Params[argIdx]
-							if paramEscapes[param] {
-								return true
-							}
-							if ssaValueEscapes(param, paramEscapes, visited) {
-								return true
-							}
-						}
-					} else {
-						return true
-					}
-				} else {
-					return true
-				}
-			}
-
-		case *ssa.FieldAddr:
-			if ssaValueEscapes(x, paramEscapes, visited) {
-				return true
-			}
-		case *ssa.IndexAddr:
-			if ssaValueEscapes(x, paramEscapes, visited) {
-				return true
-			}
-		case *ssa.Slice:
-			if ssaValueEscapes(x, paramEscapes, visited) {
-				return true
-			}
-
-		case *ssa.Field:
-			if hasPointers(x.Type()) && ssaValueEscapes(x, paramEscapes, visited) {
-				return true
-			}
-		case *ssa.Index:
-			if hasPointers(x.Type()) && ssaValueEscapes(x, paramEscapes, visited) {
-				return true
-			}
-		case *ssa.UnOp:
-			if x.Op == token.MUL {
-				if hasPointers(x.Type()) && ssaValueEscapes(x, paramEscapes, visited) {
-					return true
-				}
-			} else if x.Op == token.ARROW {
-				// Receive from channel does not make the channel escape
-				continue
-			} else {
-				if ssaValueEscapes(x, paramEscapes, visited) {
-					return true
-				}
-			}
-		case *ssa.BinOp:
-			if ssaValueEscapes(x, paramEscapes, visited) {
-				return true
-			}
-		case *ssa.ChangeType:
-			if ssaValueEscapes(x, paramEscapes, visited) {
-				return true
-			}
-		case *ssa.Convert:
-			if ssaValueEscapes(x, paramEscapes, visited) {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
-func getRoot(v ssa.Value) ssa.Value {
-	if v == nil {
-		return nil
-	}
-	switch x := v.(type) {
-	case *ssa.FieldAddr:
-		return getRoot(x.X)
-	case *ssa.IndexAddr:
-		return getRoot(x.X)
-	case *ssa.Field:
-		return getRoot(x.X)
-	case *ssa.Index:
-		return getRoot(x.X)
-	case *ssa.UnOp:
-		if x.Op == token.MUL {
-			return getRoot(x.X)
-		}
-	}
-	return v
-}
-
-func hasPointers(t types.Type) bool {
-	if t == nil {
-		return false
-	}
-	switch ut := t.Underlying().(type) {
-	case *types.Pointer, *types.Signature, *types.Map, *types.Chan, *types.Slice, *types.Interface:
-		return true
-	case *types.Struct:
-		for i := 0; i < ut.NumFields(); i++ {
-			if hasPointers(ut.Field(i).Type()) {
-				return true
-			}
-		}
-	case *types.Array:
-		return hasPointers(ut.Elem())
-	}
-	return false
 }
 
 type candidateVisitor struct {

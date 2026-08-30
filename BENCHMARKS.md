@@ -1,42 +1,61 @@
-# RustyGo Benchmarks & Performance Proof
+# RustyGo Microbenchmarks & Measured Performance Results
 
-This document presents empirical benchmark results comparing standard Go compilation (`go build`) against RustyGo optimization (`rustygoc build`).
-
----
-
-## Performance Summary Table
-
-| Benchmark Task | Standard Go (`allocs/op`) | Standard Go (`B/op`) | RustyGo (`allocs/op`) | RustyGo (`B/op`) | GC Pause Reduction | Memory Footprint Reduction |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Hot-Loop Allocation** | 1,000,000 | 64,000,000 B | **0** | **0 B** | **-98%** | **-99.9%** |
-| **JSON Pipeline Pass** | 15,000 | 1,200,000 B | **1,200** | **140,000 B** | **-85%** | **-88.3%** |
-| **WASM Task Processing** | 850 | 48,000 B | **0** | **0 B** | **-100%** | **-99.7%** (25GB $\rightarrow$ 11MB) |
+This document presents empirical benchmark results comparing thread-local arena allocations against Go runtime heap allocations (`new` / `make`) and standard library `sync.Pool`.
 
 ---
 
-## Detailed Benchmark Workloads
+## Benchmark System Information
 
-### 1. High-Frequency Allocation Benchmark (`rustygo_test/benchmarks`)
-- **Workload:** 100,000 iterations allocating short-lived payload structures per batch.
-- **Standard Go:** Triggers frequent GC cycles due to heap growth. Peak Virtual Memory: **25,000 MB**.
-- **RustyGo (`rustygoc`):** All 100,000 allocations verified as `SAFE` and allocated inside thread-local arenas. Peak Memory: **11 MB**.
+- **Date of Run:** August 30, 2026
+- **Go Version:** `go1.25.2 windows/amd64`
+- **CPU:** AMD Ryzen 7 7435HS (16 execution threads)
+- **OS/Arch:** `windows/amd64`
 
-### 2. WASM Memory Footprint Benchmark (`rustygo_test/wasm_mem.go`)
-- **Workload:** 55,000,000 structure allocations under WebAssembly resource boundaries.
-- **Standard WASM:** Peak Memory: **3,790.50 MB**
-- **RustyGo WASM:** Peak Memory: **2,509.00 MB**
-- **Net Footprint Savings:** **1,281.50 MB reduction** under high memory field limits.
+> [!NOTE]
+> **Synthetic Workload Disclaimer**: The measurements below are synthetic microbenchmarks evaluating raw allocation and deallocation latency under isolated loop conditions. They measure local memory management overhead, not overall end-to-end application throughput.
 
 ---
 
-## Methodology & Reproducibility
+## Measured Benchmark Results
 
-Benchmarks are executed using Go's standard benchmark suite and GC trace logging:
+Command executed:
+```bash
+go test -bench=. -benchmem ./rustygo_test/benchmarks/...
+```
+
+### 1. Allocation & Reset Overhead (Serial Byte Allocation)
+
+| Allocation Strategy | Latency (`ns/op`) | Memory (`B/op`) | Heap Allocs (`allocs/op`) | Speedup vs Heap |
+| :--- | :--- | :--- | :--- | :--- |
+| **RustyGo Thread-Local Arena (`Arena.TryAlloc`)** | **9.45 ns** | **0 B** | **0 allocs** | **~5.38x faster** |
+| **Standard Heap Allocation (`make([]byte, 256)`)** | **50.80 ns** | **256 B** | **1 allocs** | Baseline |
+
+### 2. Object Lifecycle Benchmarks (Serial Execution)
+
+| Strategy | Latency (`ns/op`) | Memory (`B/op`) | Heap Allocs (`allocs/op`) |
+| :--- | :--- | :--- | :--- |
+| **Standard Library `sync.Pool`** | **20.56 ns** | **0 B** | **0 allocs** |
+| **Standard Go Heap (`new(Struct)`)** | **28.24 ns** | **80 B** | **1 allocs** |
+| **Treiber Stack Pool** | **36.90 ns** | **16 B** | **1 allocs** |
+
+### 3. Object Lifecycle Benchmarks (Parallel Execution - 16 Threads)
+
+| Strategy | Latency (`ns/op`) | Memory (`B/op`) | Heap Allocs (`allocs/op`) |
+| :--- | :--- | :--- | :--- |
+| **Standard Go Heap (`new(Struct)`)** | **28.20 ns** | **80 B** | **1 allocs** |
+| **Standard Library `sync.Pool`** | **59.48 ns** | **0 B** | **0 allocs** |
+| **Treiber Stack Pool** | **348.80 ns** | **16 B** | **1 allocs** |
+
+---
+
+## Reproducing Benchmarks Locally
+
+To run and verify these benchmarks on your system:
 
 ```bash
-# 1. Run standard benchmarks with GC trace enabled
-GODEBUG=gctrace=1 go test -bench=. ./rustygo_test/benchmarks/...
+# Execute standard Go benchmark suite with memory allocation profiling
+go test -bench=. -benchmem ./rustygo_test/benchmarks/...
 
-# 2. Run WASM memory benchmark server
+# Execute WebAssembly memory comparison harness
 go run ./rustygo_test/wasm_mem.go
 ```

@@ -117,23 +117,34 @@ func analyzeFuncInternal(fn *ssa.Function) *LifetimeResult {
 				g.AddEdge(valNode, addrNode, "Store")
 				tracker.AddAlias(x.Addr, x.Val)
 
+			case *ssa.Field:
+				xNode := g.GetOrCreateNode(x.X, nil, "x")
+				valNode := g.GetOrCreateNode(val, nil, val.Name())
+				g.AddEdge(xNode, valNode, "Field")
+				g.AddEdge(valNode, xNode, "FieldOf")
+				tracker.AddAlias(val, x.X)
+
 			case *ssa.FieldAddr:
 				xNode := g.GetOrCreateNode(x.X, nil, "x")
 				valNode := g.GetOrCreateNode(val, nil, val.Name())
 				g.AddEdge(xNode, valNode, "FieldAddr")
+				g.AddEdge(valNode, xNode, "FieldAddrOf")
 				tracker.AddAlias(val, x.X)
 
 			case *ssa.IndexAddr:
 				xNode := g.GetOrCreateNode(x.X, nil, "x")
 				valNode := g.GetOrCreateNode(val, nil, val.Name())
 				g.AddEdge(xNode, valNode, "IndexAddr")
+				g.AddEdge(valNode, xNode, "IndexAddrOf")
 				tracker.AddAlias(val, x.X)
 
 			case *ssa.Slice:
 				xNode := g.GetOrCreateNode(x.X, nil, "x")
 				valNode := g.GetOrCreateNode(val, nil, val.Name())
 				g.AddEdge(xNode, valNode, "Slice")
-				tracker.AddAlias(val, x.X)
+				if HasPointers(val.Type()) {
+					tracker.AddAlias(val, x.X)
+				}
 
 			case *ssa.ChangeInterface:
 				xNode := g.GetOrCreateNode(x.X, nil, "x")
@@ -176,6 +187,14 @@ func analyzeFuncInternal(fn *ssa.Function) *LifetimeResult {
 					g.AddEdge(bindNode, valNode, "ClosureBind")
 					tracker.AddAlias(val, bind)
 				}
+
+			case *ssa.MakeInterface:
+				xNode := g.GetOrCreateNode(x.X, nil, "x")
+				valNode := g.GetOrCreateNode(val, nil, val.Name())
+				g.AddEdge(xNode, valNode, "MakeInterface")
+				miNode := g.GetOrCreateNode(nil, x, "MakeInterfaceInstr")
+				g.AddEdge(xNode, miNode, "MakeInterfaceAction")
+				tracker.AddAlias(val, x.X)
 
 			case *ssa.Send:
 				chanNode := g.GetOrCreateNode(x.Chan, nil, "chan")
@@ -226,6 +245,8 @@ func analyzeFuncInternal(fn *ssa.Function) *LifetimeResult {
 						g.AddEdge(xNode, valNode, "UnOp")
 						tracker.AddAlias(val, x.X)
 					}
+				} else if x.Op == token.ARROW {
+					// Channel receive does not propagate channel lifetime
 				} else {
 					xNode := g.GetOrCreateNode(x.X, nil, "x")
 					valNode := g.GetOrCreateNode(val, nil, val.Name())
@@ -233,14 +254,7 @@ func analyzeFuncInternal(fn *ssa.Function) *LifetimeResult {
 					tracker.AddAlias(val, x.X)
 				}
 
-			case *ssa.BinOp:
-				xNode := g.GetOrCreateNode(x.X, nil, "x")
-				yNode := g.GetOrCreateNode(x.Y, nil, "y")
-				valNode := g.GetOrCreateNode(val, nil, val.Name())
-				g.AddEdge(xNode, valNode, "BinOpX")
-				g.AddEdge(yNode, valNode, "BinOpY")
-				tracker.AddAlias(val, x.X)
-				tracker.AddAlias(val, x.Y)
+
 			}
 		}
 	}

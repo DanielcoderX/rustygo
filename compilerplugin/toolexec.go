@@ -32,19 +32,6 @@ func ToolExec(args []string) (err error) {
 	toolPath := args[0]
 	toolArgs := args[1:]
 
-	if strings.HasSuffix(toolPath, "compile.exe") || strings.HasSuffix(toolPath, "compile") {
-		f, _ := os.OpenFile(filepath.Join(os.TempDir(), "rustygoc_env.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if f != nil {
-			fmt.Fprintf(f, "--- NEW COMPILE ---\n")
-			for _, e := range os.Environ() {
-				if strings.Contains(e, "GO") || strings.Contains(e, "LD") || strings.Contains(e, "TOOL") {
-					fmt.Fprintf(f, "%s\n", e)
-				}
-			}
-			f.Close()
-		}
-	}
-
 	toolBase := filepath.Base(toolPath)
 	toolBase = strings.TrimSuffix(toolBase, ".exe")
 
