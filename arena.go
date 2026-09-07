@@ -9,14 +9,79 @@ import (
 	"unsafe"
 )
 
-// Arena is a fixed-size memory arena
-type Arena struct {
-	buf    []byte
-	off    uint64
-	base   uintptr
-	closed uint32
-
+type chunk struct {
+	buf     []byte
+	base    uintptr
+	off     uint64
 	release func([]byte) error
+}
+
+func (c *chunk) tryAlloc(n int) ([]byte, bool) {
+	if n <= 0 {
+		return nil, false
+	}
+	req := uint64(n)
+	capacity := uint64(len(c.buf))
+	for {
+		off := atomic.LoadUint64(&c.off)
+		end := off + req
+		if end < off || end > capacity {
+			return nil, false
+		}
+		if atomic.CompareAndSwapUint64(&c.off, off, end) {
+			return c.buf[off:end], true
+		}
+	}
+}
+
+func (c *chunk) tryAllocAligned(n, align int) ([]byte, bool) {
+	if n <= 0 || !isPowerOfTwo(align) {
+		return nil, false
+	}
+	req := uint64(n)
+	mask := uintptr(align - 1)
+	capacity := uint64(len(c.buf))
+	for {
+		off := atomic.LoadUint64(&c.off)
+		curAddr := c.base + uintptr(off)
+		alignedAddr := (curAddr + mask) & ^mask
+		aligned := uint64(alignedAddr - c.base)
+		end := aligned + req
+		if aligned < off || end < aligned || end > capacity {
+			return nil, false
+		}
+		if atomic.CompareAndSwapUint64(&c.off, off, end) {
+			return c.buf[aligned:end], true
+		}
+	}
+}
+
+// Arena is a memory arena supporting dynamic slab/chunk growth.
+type Arena struct {
+	mu        sync.Mutex
+	chunks    []*chunk
+	active    atomic.Pointer[chunk]
+	chunkSize int
+	maxCap    int
+	closed    uint32
+}
+
+type ArenaOption func(*Arena)
+
+func WithChunkSize(size int) ArenaOption {
+	return func(a *Arena) {
+		if size > 0 {
+			a.chunkSize = size
+		}
+	}
+}
+
+func WithMaxCapacity(maxCap int) ArenaOption {
+	return func(a *Arena) {
+		if maxCap > 0 {
+			a.maxCap = maxCap
+		}
+	}
 }
 
 var (
@@ -36,23 +101,55 @@ var (
 
 type ArenaMark uint64
 
-func NewArena(size int) *Arena {
-	if size <= 0 {
-		panic("arena size must be > 0")
-	}
+func makeMark(chunkIdx int, off uint64) ArenaMark {
+	return ArenaMark((uint64(chunkIdx) << 32) | (off & 0xFFFFFFFF))
+}
+
+func parseMark(mark ArenaMark) (chunkIdx int, off uint64) {
+	u := uint64(mark)
+	return int(u >> 32), u & 0xFFFFFFFF
+}
+
+func newChunk(size int) (*chunk, error) {
 	buf, release, err := allocArenaBuffer(size)
 	if err != nil {
-		panic(err.Error())
+		return nil, err
 	}
-	a := &Arena{
+	return &chunk{
 		buf:     buf,
 		base:    uintptr(unsafe.Pointer(&buf[0])),
 		release: release,
+	}, nil
+}
+
+func NewArena(size int, opts ...ArenaOption) *Arena {
+	if size <= 0 {
+		panic("arena size must be > 0")
 	}
+	a := &Arena{
+		chunkSize: size,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(a)
+		}
+	}
+
+	chk, err := newChunk(a.chunkSize)
+	if err != nil {
+		panic(err.Error())
+	}
+	a.chunks = []*chunk{chk}
+	a.active.Store(chk)
+
 	runtime.SetFinalizer(a, func(arena *Arena) {
 		_ = arena.Close()
 	})
 	return a
+}
+
+func NewFixedArena(size int) *Arena {
+	return NewArena(size, WithMaxCapacity(size))
 }
 
 // TryAlloc allocates memory globally and reports whether it succeeded.
@@ -60,18 +157,13 @@ func (a *Arena) TryAlloc(n int) ([]byte, bool) {
 	if n <= 0 {
 		return nil, false
 	}
-	req := uint64(n)
-	capacity := uint64(len(a.buf))
-	for {
-		off := atomic.LoadUint64(&a.off)
-		end := off + req
-		if end < off || end > capacity {
-			return nil, false
-		}
-		if atomic.CompareAndSwapUint64(&a.off, off, end) {
-			return a.buf[off:end], true
+	act := a.active.Load()
+	if act != nil {
+		if buf, ok := act.tryAlloc(n); ok {
+			return buf, true
 		}
 	}
+	return a.allocSlow(n, 1)
 }
 
 // AllocOrErr allocates memory globally and returns a descriptive error on failure.
@@ -91,22 +183,80 @@ func (a *Arena) TryAllocAligned(n, align int) ([]byte, bool) {
 	if n <= 0 || !isPowerOfTwo(align) {
 		return nil, false
 	}
-	req := uint64(n)
-	mask := uintptr(align - 1)
-	capacity := uint64(len(a.buf))
-	for {
-		off := atomic.LoadUint64(&a.off)
-		curAddr := a.base + uintptr(off)
-		alignedAddr := (curAddr + mask) & ^mask
-		aligned := uint64(alignedAddr - a.base)
-		end := aligned + req
-		if aligned < off || end < aligned || end > capacity {
-			return nil, false
-		}
-		if atomic.CompareAndSwapUint64(&a.off, off, end) {
-			return a.buf[aligned:end], true
+	act := a.active.Load()
+	if act != nil {
+		if buf, ok := act.tryAllocAligned(n, align); ok {
+			return buf, true
 		}
 	}
+	return a.allocSlow(n, align)
+}
+
+func (a *Arena) allocSlow(n, align int) ([]byte, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	act := a.active.Load()
+	if act != nil {
+		var buf []byte
+		var ok bool
+		if align > 1 {
+			buf, ok = act.tryAllocAligned(n, align)
+		} else {
+			buf, ok = act.tryAlloc(n)
+		}
+		if ok {
+			return buf, true
+		}
+	}
+
+	for i, chk := range a.chunks {
+		if chk == act {
+			for j := i + 1; j < len(a.chunks); j++ {
+				nextChk := a.chunks[j]
+				var buf []byte
+				var ok bool
+				if align > 1 {
+					buf, ok = nextChk.tryAllocAligned(n, align)
+				} else {
+					buf, ok = nextChk.tryAlloc(n)
+				}
+				if ok {
+					a.active.Store(nextChk)
+					return buf, true
+				}
+			}
+			break
+		}
+	}
+
+	newSize := a.chunkSize
+	if n > newSize {
+		newSize = n
+	}
+
+	if a.maxCap > 0 {
+		curCap := 0
+		for _, chk := range a.chunks {
+			curCap += len(chk.buf)
+		}
+		if curCap+newSize > a.maxCap {
+			return nil, false
+		}
+	}
+
+	newChk, err := newChunk(newSize)
+	if err != nil {
+		return nil, false
+	}
+
+	a.chunks = append(a.chunks, newChk)
+	a.active.Store(newChk)
+
+	if align > 1 {
+		return newChk.tryAllocAligned(n, align)
+	}
+	return newChk.tryAlloc(n)
 }
 
 // AllocAlignedOrErr allocates aligned memory and returns a descriptive error on failure.
@@ -143,7 +293,14 @@ func (a *Arena) Alloc(n int) []byte {
 }
 
 func (a *Arena) Reset() {
-	atomic.StoreUint64(&a.off, 0)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, c := range a.chunks {
+		atomic.StoreUint64(&c.off, 0)
+	}
+	if len(a.chunks) > 0 {
+		a.active.Store(a.chunks[0])
+	}
 }
 
 // Close releases the arena backing memory to the operating system.
@@ -155,46 +312,101 @@ func (a *Arena) Close() error {
 		return nil
 	}
 	runtime.SetFinalizer(a, nil)
-	buf := a.buf
-	a.buf = nil
-	a.base = 0
-	atomic.StoreUint64(&a.off, 0)
-	if a.release == nil || len(buf) == 0 {
-		return nil
+
+	a.mu.Lock()
+	chunks := a.chunks
+	a.chunks = nil
+	a.active.Store(nil)
+	a.mu.Unlock()
+
+	var firstErr error
+	for _, c := range chunks {
+		if c.release != nil && len(c.buf) > 0 {
+			if err := c.release(c.buf); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		c.buf = nil
+		c.base = 0
+		atomic.StoreUint64(&c.off, 0)
 	}
-	return a.release(buf)
+	return firstErr
 }
 
 func (a *Arena) Capacity() int {
-	return len(a.buf)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	tot := 0
+	for _, c := range a.chunks {
+		tot += len(c.buf)
+	}
+	return tot
 }
 
 func (a *Arena) Stats() (used, capacity int) {
-	used = int(atomic.LoadUint64(&a.off))
-	capacity = len(a.buf)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, c := range a.chunks {
+		used += int(atomic.LoadUint64(&c.off))
+		capacity += len(c.buf)
+	}
 	return
 }
 
 // Mark captures the current arena allocation offset.
 func (a *Arena) Mark() ArenaMark {
-	return ArenaMark(atomic.LoadUint64(&a.off))
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	act := a.active.Load()
+	for i, c := range a.chunks {
+		if c == act {
+			return makeMark(i, atomic.LoadUint64(&c.off))
+		}
+	}
+	if len(a.chunks) > 0 {
+		return makeMark(0, atomic.LoadUint64(&a.chunks[0].off))
+	}
+	return makeMark(0, 0)
 }
 
 // Rewind moves the arena offset back to a previous mark.
 func (a *Arena) Rewind(mark ArenaMark) error {
-	target := uint64(mark)
-	if target > uint64(len(a.buf)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	targetIdx, targetOff := parseMark(mark)
+	if targetIdx < 0 || targetIdx >= len(a.chunks) {
 		return ErrInvalidArenaMark
 	}
-	for {
-		cur := atomic.LoadUint64(&a.off)
-		if target > cur {
-			return ErrRewindForward
-		}
-		if atomic.CompareAndSwapUint64(&a.off, cur, target) {
-			return nil
+	targetChunk := a.chunks[targetIdx]
+	if targetOff > uint64(len(targetChunk.buf)) {
+		return ErrInvalidArenaMark
+	}
+
+	act := a.active.Load()
+	actIdx := 0
+	for i, c := range a.chunks {
+		if c == act {
+			actIdx = i
+			break
 		}
 	}
+
+	if targetIdx > actIdx {
+		return ErrRewindForward
+	}
+	if targetIdx == actIdx && targetOff > atomic.LoadUint64(&act.off) {
+		return ErrRewindForward
+	}
+
+	for i := targetIdx + 1; i < len(a.chunks); i++ {
+		atomic.StoreUint64(&a.chunks[i].off, 0)
+	}
+
+	atomic.StoreUint64(&targetChunk.off, targetOff)
+	a.active.Store(targetChunk)
+
+	return nil
 }
 
 // WithScope creates a scope, executes fn, and always exits the scope.

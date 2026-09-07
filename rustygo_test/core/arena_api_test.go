@@ -11,7 +11,7 @@ import (
 )
 
 func TestArenaTryAllocAndAllocOrErr(t *testing.T) {
-	arena := rg.NewArena(8)
+	arena := rg.NewFixedArena(8)
 
 	if _, ok := arena.TryAlloc(0); ok {
 		t.Fatal("TryAlloc(0) should fail")
@@ -26,12 +26,116 @@ func TestArenaTryAllocAndAllocOrErr(t *testing.T) {
 	}
 
 	if _, ok := arena.TryAlloc(5); ok {
-		t.Fatal("TryAlloc should fail when arena is out of memory")
+		t.Fatal("TryAlloc should fail when fixed arena is out of memory")
 	}
 
 	if _, err := arena.AllocOrErr(5); !errors.Is(err, rg.ErrArenaOutOfMemory) {
 		t.Fatalf("expected ErrArenaOutOfMemory, got %v", err)
 	}
+}
+
+func TestDynamicArenaGrowth(t *testing.T) {
+	arena := rg.NewArena(16) // initial chunk size 16
+	defer arena.Close()
+
+	buf1 := arena.Alloc(12)
+	if len(buf1) != 12 {
+		t.Fatalf("expected len 12, got %d", len(buf1))
+	}
+	if arena.Capacity() != 16 {
+		t.Fatalf("expected initial cap 16, got %d", arena.Capacity())
+	}
+
+	// This allocation exceeds chunk 0 (12 + 10 = 22 > 16), triggering chunk 1 growth
+	buf2 := arena.Alloc(10)
+	if len(buf2) != 10 {
+		t.Fatalf("expected len 10, got %d", len(buf2))
+	}
+	if arena.Capacity() < 26 {
+		t.Fatalf("expected expanded capacity >= 26, got %d", arena.Capacity())
+	}
+
+	used, cap := arena.Stats()
+	if used != 22 {
+		t.Fatalf("expected used 22, got %d", used)
+	}
+	if cap < 26 {
+		t.Fatalf("expected capacity >= 26, got %d", cap)
+	}
+}
+
+func TestMultiChunkResetAndClose(t *testing.T) {
+	arena := rg.NewArena(16)
+
+	_ = arena.Alloc(12)
+	_ = arena.Alloc(12) // chunk 2 allocated
+	capBefore := arena.Capacity()
+
+	arena.Reset()
+	used, capAfter := arena.Stats()
+	if used != 0 {
+		t.Fatalf("expected used=0 after Reset, got %d", used)
+	}
+	if capAfter != capBefore {
+		t.Fatalf("expected capacity retained after Reset (%d), got %d", capBefore, capAfter)
+	}
+
+	// Allocate again, reusing existing slabs
+	_ = arena.Alloc(12)
+	_ = arena.Alloc(12)
+	if arena.Capacity() != capBefore {
+		t.Fatalf("expected no new chunk allocation after Reset, cap got %d", arena.Capacity())
+	}
+
+	if err := arena.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+}
+
+func TestMultiChunkMarkAndRewind(t *testing.T) {
+	arena := rg.NewArena(16)
+	defer arena.Close()
+
+	_ = arena.Alloc(10)
+	mark := arena.Mark()
+
+	_ = arena.Alloc(12) // causes expansion to chunk 2
+	used, _ := arena.Stats()
+	if used != 22 {
+		t.Fatalf("expected used 22, got %d", used)
+	}
+
+	if err := arena.Rewind(mark); err != nil {
+		t.Fatalf("Rewind across chunks failed: %v", err)
+	}
+
+	usedAfter, _ := arena.Stats()
+	if usedAfter != 10 {
+		t.Fatalf("expected used 10 after Rewind, got %d", usedAfter)
+	}
+}
+
+func TestAllocMapAndAllocChan(t *testing.T) {
+	arena := rg.NewArena(1024)
+	scope := arena.EnterScope()
+
+	m := rg.AllocMap[string, int](scope)
+	m["hello"] = 42
+
+	ch := rg.AllocChan[string](scope, 2)
+	ch <- "foo"
+	ch <- "bar"
+
+	scope.Exit()
+
+	// Verify that the pooled map was cleared when returned to the pool.
+	// We get it from the pool again to verify it is clear.
+	scope2 := arena.EnterScope()
+	m2 := rg.AllocMap[string, int](scope2)
+	if len(m2) != 0 {
+		t.Fatalf("expected recycled map to be clear, got len %d", len(m2))
+	}
+	scope2.Exit()
 }
 
 func TestScopeAllocRejectsNonPositive(t *testing.T) {
@@ -343,27 +447,4 @@ func assertPanicsWith(t *testing.T, want string, fn func()) {
 		}
 	}()
 	fn()
-}
-
-func TestAllocMapAndAllocChan(t *testing.T) {
-	arena := rg.NewArena(1024)
-	scope := arena.EnterScope()
-
-	m := rg.AllocMap[string, int](scope)
-	m["hello"] = 42
-
-	ch := rg.AllocChan[string](scope, 2)
-	ch <- "foo"
-	ch <- "bar"
-
-	scope.Exit()
-
-	// Verify that the pooled map was cleared when returned to the pool.
-	// We get it from the pool again to verify it is clear.
-	scope2 := arena.EnterScope()
-	m2 := rg.AllocMap[string, int](scope2)
-	if len(m2) != 0 {
-		t.Fatalf("expected recycled map to be clear, got len %d", len(m2))
-	}
-	scope2.Exit()
 }
