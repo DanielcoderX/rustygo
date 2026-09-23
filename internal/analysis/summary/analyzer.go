@@ -1,10 +1,12 @@
 package summary
 
 import (
+	"sync/atomic"
+
 	"golang.org/x/tools/go/ssa"
 )
 
-var lastSummaries SummaryMap
+var lastSummaries atomic.Pointer[SummaryMap]
 
 // AnalyzeSummaries builds inter-procedural function summaries for all functions in an SSA program.
 func AnalyzeSummaries(prog *ssa.Program) SummaryMap {
@@ -96,16 +98,20 @@ func AnalyzeSummaries(prog *ssa.Program) SummaryMap {
 		}
 	}
 
-	lastSummaries = summaries
+	lastSummaries.Store(&summaries)
 	return summaries
 }
 
 // GetSummary returns the function summary for a given SSA function.
 func GetSummary(fn *ssa.Function) *FunctionSummary {
-	if fn == nil || lastSummaries == nil {
+	if fn == nil {
 		return nil
 	}
-	return lastSummaries[fn.String()]
+	sums := lastSummaries.Load()
+	if sums == nil || *sums == nil {
+		return nil
+	}
+	return (*sums)[fn.String()]
 }
 
 func analyzeValueFlow(val ssa.Value, summaries SummaryMap, visited map[ssa.Value]bool) (escapes, returned, stored bool) {

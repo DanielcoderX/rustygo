@@ -1,50 +1,53 @@
 package allocation
 
 import (
+	"sync/atomic"
+
 	"golang.org/x/tools/go/ssa"
 )
 
-var lastResult *Result
-var idCounter int
+var lastResult atomic.Pointer[Result]
 
 // Analyze discovers allocations in all functions of an SSA program.
 func Analyze(program *ssa.Program) (*Result, error) {
 	res := &Result{
 		Allocations: make(map[int]*Allocation),
 	}
-	idCounter = 0
+	counter := 0
 
 	for _, pkg := range program.AllPackages() {
 		for _, member := range pkg.Members {
 			if fn, ok := member.(*ssa.Function); ok {
-				analyzeFuncInternal(fn, res)
+				analyzeFuncInternal(fn, res, &counter)
 			}
 		}
 	}
 
-	lastResult = res
+	lastResult.Store(res)
 	return res, nil
 }
 
 // AnalyzeFunction discovers allocations inside a single SSA function.
-func AnalyzeFunction(fn *ssa.Function) {
+func AnalyzeFunction(fn *ssa.Function) *Result {
 	res := &Result{
 		Allocations: make(map[int]*Allocation),
 	}
-	idCounter = 0
-	analyzeFuncInternal(fn, res)
-	lastResult = res
+	counter := 0
+	analyzeFuncInternal(fn, res, &counter)
+	lastResult.Store(res)
+	return res
 }
 
 // GetAllocation returns the allocation with the given stable ID.
 func GetAllocation(id int) *Allocation {
-	if lastResult == nil {
+	res := lastResult.Load()
+	if res == nil {
 		return nil
 	}
-	return lastResult.Allocations[id]
+	return res.Allocations[id]
 }
 
-func analyzeFuncInternal(fn *ssa.Function, res *Result) {
+func analyzeFuncInternal(fn *ssa.Function, res *Result, counter *int) {
 	if fn == nil {
 		return
 	}
@@ -58,10 +61,11 @@ func analyzeFuncInternal(fn *ssa.Function, res *Result) {
 
 			if isAlloc {
 				val := instr.(ssa.Value)
-				idCounter++
+				*counter++
+				id := *counter
 				pos := fn.Prog.Fset.Position(instr.Pos())
-				res.Allocations[idCounter] = &Allocation{
-					ID:          idCounter,
+				res.Allocations[id] = &Allocation{
+					ID:          id,
 					Type:        val.Type(),
 					Function:    fn,
 					Instruction: instr,

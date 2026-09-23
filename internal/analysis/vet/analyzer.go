@@ -1,7 +1,9 @@
 package vet
 
 import (
+	"fmt"
 	"reflect"
+	"strings"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
@@ -33,14 +35,46 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		return nil, err
 	}
 
+	pragmas := make(map[string]bool)
+	for _, f := range pass.Files {
+		for _, cg := range f.Comments {
+			for _, c := range cg.List {
+				text := strings.TrimSpace(c.Text)
+				if strings.HasPrefix(text, "//rustygo:arena") || strings.HasPrefix(text, "//rustygo:scoped") {
+					pos := pass.Fset.Position(c.Pos())
+					key := fmt.Sprintf("%s:%d", pos.Filename, pos.Line)
+					pragmas[key] = true
+					nextLineKey := fmt.Sprintf("%s:%d", pos.Filename, pos.Line+1)
+					pragmas[nextLineKey] = true
+				}
+			}
+		}
+	}
+
 	for _, dec := range res.Decisions {
+		allocPos := pass.Fset.Position(dec.Allocation.Instruction.Pos())
+		key := fmt.Sprintf("%s:%d", allocPos.Filename, allocPos.Line)
+		hasPragma := pragmas[key]
+
 		switch dec.Decision {
 		case escape.Arena:
-			pass.Reportf(dec.Allocation.Instruction.Pos(), "[SAFE] Allocation of '%s' is arena-eligible", dec.Allocation.Type.String())
+			if hasPragma {
+				pass.Reportf(dec.Allocation.Instruction.Pos(), "[PRAGMA VERIFIED] Allocation of '%s' adheres to //rustygo:arena scope", dec.Allocation.Type.String())
+			} else {
+				pass.Reportf(dec.Allocation.Instruction.Pos(), "[SAFE] Allocation of '%s' is arena-eligible", dec.Allocation.Type.String())
+			}
 		case escape.Heap:
-			pass.Reportf(dec.Allocation.Instruction.Pos(), "[UNSAFE] Allocation of '%s' escapes -> Reason: %v", dec.Allocation.Type.String(), reasonString(dec.Reason))
+			if hasPragma {
+				pass.Reportf(dec.Allocation.Instruction.Pos(), "[PRAGMA VIOLATION] Allocation of '%s' annotated with //rustygo:arena escapes -> Reason: %v", dec.Allocation.Type.String(), reasonString(dec.Reason))
+			} else {
+				pass.Reportf(dec.Allocation.Instruction.Pos(), "[UNSAFE] Allocation of '%s' escapes -> Reason: %v", dec.Allocation.Type.String(), reasonString(dec.Reason))
+			}
 		case escape.Unknown:
-			pass.Reportf(dec.Allocation.Instruction.Pos(), "[UNKNOWN] Allocation of '%s' lifetime unproven", dec.Allocation.Type.String())
+			if hasPragma {
+				pass.Reportf(dec.Allocation.Instruction.Pos(), "[PRAGMA VIOLATION] Allocation of '%s' annotated with //rustygo:arena has unproven lifetime", dec.Allocation.Type.String())
+			} else {
+				pass.Reportf(dec.Allocation.Instruction.Pos(), "[UNKNOWN] Allocation of '%s' lifetime unproven", dec.Allocation.Type.String())
+			}
 		}
 	}
 

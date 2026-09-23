@@ -119,10 +119,10 @@ func f() {
 				t.Fatalf("failed to build SSA: %v", err)
 			}
 
-			AnalyzePackage(pkg)
+			res := AnalyzePackage(pkg)
 
 			found := false
-			for _, report := range lastResult.Reports {
+			for _, report := range res.Reports {
 				if strings.Contains(report.ObjectID, "f") {
 					found = true
 					if report.LifetimeState != tt.expectedState {
@@ -131,9 +131,9 @@ func f() {
 				}
 			}
 
-			if !found && len(lastResult.Reports) > 0 {
+			if !found && len(res.Reports) > 0 {
 				// Fallback to asserting first report
-				for _, report := range lastResult.Reports {
+				for _, report := range res.Reports {
 					if report.LifetimeState != tt.expectedState {
 						t.Errorf("expected state %s, got %s", tt.expectedState, report.LifetimeState)
 					}

@@ -26,14 +26,15 @@ func Analyze(program *ssa.Program) (*LifetimeResult, error) {
 		res.ResultState = Unsafe
 	}
 
-	lastResult = res
+	lastResult.Store(res)
 	return res, nil
 }
 
 // AnalyzePackage runs the lifetime analysis pass over a single package.
-func AnalyzePackage(pkg *ssa.Package) {
+func AnalyzePackage(pkg *ssa.Package) *LifetimeResult {
 	res := analyzePkgInternal(pkg)
-	lastResult = res
+	lastResult.Store(res)
+	return res
 }
 
 func analyzePkgInternal(pkg *ssa.Package) *LifetimeResult {
@@ -55,10 +56,10 @@ func analyzePkgInternal(pkg *ssa.Package) *LifetimeResult {
 	return res
 }
 
-// AnalyzeFunction runs the lifetime analysis pass over a single function.
-func AnalyzeFunction(fn *ssa.Function) {
+func AnalyzeFunction(fn *ssa.Function) *LifetimeResult {
 	res := analyzeFuncInternal(fn)
-	lastResult = res
+	lastResult.Store(res)
+	return res
 }
 
 func analyzeFuncInternal(fn *ssa.Function) *LifetimeResult {
@@ -297,8 +298,9 @@ func analyzeFuncInternal(fn *ssa.Function) *LifetimeResult {
 
 // ReportForObject retrieves the report for the given object ID.
 func ReportForObject(id string) *LifetimeReport {
-	if lastResult == nil {
+	res := lastResult.Load()
+	if res == nil {
 		return nil
 	}
-	return lastResult.Reports[id]
+	return res.Reports[id]
 }

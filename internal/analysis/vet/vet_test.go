@@ -8,5 +8,5 @@ import (
 
 func TestVetAnalyzer(t *testing.T) {
 	testdata := analysistest.TestData()
-	analysistest.Run(t, testdata, Analyzer, "basic")
+	analysistest.Run(t, testdata, Analyzer, "basic", "pragma")
 }

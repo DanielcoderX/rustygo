@@ -50,13 +50,14 @@ func f() {
 		t.Fatalf("failed to build SSA: %v", err)
 	}
 
+	var res *Result
 	for _, member := range pkg.Members {
 		if fn, ok := member.(*ssa.Function); ok && fn.Name() == "f" {
-			AnalyzeFunction(fn)
+			res = AnalyzeFunction(fn)
 		}
 	}
 
-	if len(lastResult.Allocations) != 2 {
-		t.Errorf("expected 2 allocations, got %d", len(lastResult.Allocations))
+	if res == nil || len(res.Allocations) != 2 {
+		t.Errorf("expected 2 allocations, got %v", res)
 	}
 }

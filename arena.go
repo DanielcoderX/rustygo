@@ -58,12 +58,15 @@ func (c *chunk) tryAllocAligned(n, align int) ([]byte, bool) {
 
 // Arena is a memory arena supporting dynamic slab/chunk growth.
 type Arena struct {
-	mu        sync.Mutex
-	chunks    []*chunk
-	active    atomic.Pointer[chunk]
-	chunkSize int
-	maxCap    int
-	closed    uint32
+	mu              sync.Mutex
+	chunks          []*chunk
+	active          atomic.Pointer[chunk]
+	chunkSize       int
+	maxCap          int
+	geometricGrowth bool
+	poisonOnExit    bool
+	poisonPattern   byte
+	closed          uint32
 }
 
 type ArenaOption func(*Arena)
@@ -81,6 +84,19 @@ func WithMaxCapacity(maxCap int) ArenaOption {
 		if maxCap > 0 {
 			a.maxCap = maxCap
 		}
+	}
+}
+
+func WithGeometricGrowth(enabled bool) ArenaOption {
+	return func(a *Arena) {
+		a.geometricGrowth = enabled
+	}
+}
+
+func WithPoisonOnScopeExit(pattern byte) ArenaOption {
+	return func(a *Arena) {
+		a.poisonOnExit = true
+		a.poisonPattern = pattern
 	}
 }
 
@@ -127,7 +143,8 @@ func NewArena(size int, opts ...ArenaOption) *Arena {
 		panic("arena size must be > 0")
 	}
 	a := &Arena{
-		chunkSize: size,
+		chunkSize:       size,
+		geometricGrowth: true,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -231,17 +248,33 @@ func (a *Arena) allocSlow(n, align int) ([]byte, bool) {
 	}
 
 	newSize := a.chunkSize
+	curCap := 0
+	for _, chk := range a.chunks {
+		curCap += len(chk.buf)
+	}
+	if a.geometricGrowth && curCap > 0 {
+		nextCap := curCap
+		const maxChunkSize = 16 * 1024 * 1024
+		if nextCap > maxChunkSize {
+			nextCap = maxChunkSize
+		}
+		if nextCap > newSize {
+			newSize = nextCap
+		}
+	}
 	if n > newSize {
 		newSize = n
 	}
 
 	if a.maxCap > 0 {
-		curCap := 0
-		for _, chk := range a.chunks {
-			curCap += len(chk.buf)
+		if curCap >= a.maxCap {
+			return nil, false
 		}
 		if curCap+newSize > a.maxCap {
-			return nil, false
+			newSize = a.maxCap - curCap
+			if newSize < n {
+				return nil, false
+			}
 		}
 	}
 
@@ -426,17 +459,23 @@ func (a *Arena) WithScope(fn func(*Scope) error) (err error) {
 // ----------------- ScopedArena -----------------
 
 type Scope struct {
-	arena    *Arena
-	used     uint64
-	active   uint32
-	cleanups []func()
+	arena         *Arena
+	used          uint64
+	active        uint32
+	cleanups      []func()
+	poisonOnExit  bool
+	poisonPattern byte
+	poisonMu      sync.Mutex
+	allocs        [][]byte
 }
 
 // EnterScope returns a new scope. Scope allocations are concurrency-safe.
 func (a *Arena) EnterScope() *Scope {
 	return &Scope{
-		arena:  a,
-		active: 1,
+		arena:         a,
+		active:        1,
+		poisonOnExit:  a.poisonOnExit,
+		poisonPattern: a.poisonPattern,
 	}
 }
 
@@ -453,6 +492,11 @@ func (s *Scope) TryAlloc(n int) ([]byte, bool) {
 	buf, ok := s.arena.TryAlloc(n)
 	if ok {
 		atomic.AddUint64(&s.used, uint64(n))
+		if s.poisonOnExit {
+			s.poisonMu.Lock()
+			s.allocs = append(s.allocs, buf)
+			s.poisonMu.Unlock()
+		}
 	}
 	return buf, ok
 }
@@ -506,6 +550,17 @@ func (s *Scope) Exit() {
 		s.cleanups[i]()
 	}
 	s.cleanups = nil
+
+	if s.poisonOnExit {
+		s.poisonMu.Lock()
+		for _, b := range s.allocs {
+			for i := range b {
+				b[i] = s.poisonPattern
+			}
+		}
+		s.allocs = nil
+		s.poisonMu.Unlock()
+	}
 }
 
 var (
@@ -735,4 +790,142 @@ func AllocSliceCap[T any](s *Scope, length, capacity int) []T {
 	buf := s.arena.AllocAligned(size*capacity, align)
 	atomic.AddUint64(&s.used, uint64(len(buf)))
 	return unsafe.Slice((*T)(unsafe.Pointer(&buf[0])), capacity)[:length:capacity]
+}
+
+// ----------------- LocalArena (Unsynchronized Fast-Path) -----------------
+
+// LocalArena is a dedicated single-goroutine bump allocator without atomic or mutex overhead.
+type LocalArena struct {
+	chunks    []*chunk
+	activeIdx int
+	chunkSize int
+	closed    bool
+}
+
+// NewLocalArena creates an unsynchronized bump allocator with geometric growth.
+func NewLocalArena(size int) *LocalArena {
+	if size <= 0 {
+		panic("arena size must be > 0")
+	}
+	chk, err := newChunk(size)
+	if err != nil {
+		panic(err.Error())
+	}
+	la := &LocalArena{
+		chunks:    []*chunk{chk},
+		activeIdx: 0,
+		chunkSize: size,
+	}
+	runtime.SetFinalizer(la, func(a *LocalArena) {
+		_ = a.Close()
+	})
+	return la
+}
+
+func (la *LocalArena) Alloc(n int) []byte {
+	return la.AllocAligned(n, 1)
+}
+
+func (la *LocalArena) AllocAligned(n, align int) []byte {
+	if n <= 0 {
+		panic("alloc size must be > 0")
+	}
+	if !isPowerOfTwo(align) {
+		panic("alignment must be power of 2")
+	}
+	chk := la.chunks[la.activeIdx]
+	mask := uintptr(align - 1)
+
+	curAddr := chk.base + uintptr(chk.off)
+	alignedAddr := (curAddr + mask) & ^mask
+	alignedOff := uint64(alignedAddr - chk.base)
+	end := alignedOff + uint64(n)
+
+	if alignedOff >= chk.off && end <= uint64(len(chk.buf)) {
+		chk.off = end
+		return chk.buf[alignedOff:end]
+	}
+
+	return la.growAndAlloc(n, align)
+}
+
+func (la *LocalArena) growAndAlloc(n, align int) []byte {
+	for i := la.activeIdx + 1; i < len(la.chunks); i++ {
+		chk := la.chunks[i]
+		mask := uintptr(align - 1)
+		curAddr := chk.base + uintptr(chk.off)
+		alignedAddr := (curAddr + mask) & ^mask
+		alignedOff := uint64(alignedAddr - chk.base)
+		end := alignedOff + uint64(n)
+		if alignedOff >= chk.off && end <= uint64(len(chk.buf)) {
+			la.activeIdx = i
+			chk.off = end
+			return chk.buf[alignedOff:end]
+		}
+	}
+
+	curCap := 0
+	for _, c := range la.chunks {
+		curCap += len(c.buf)
+	}
+	newSize := curCap
+	if n > newSize {
+		newSize = n
+	}
+	chk, err := newChunk(newSize)
+	if err != nil {
+		panic(err.Error())
+	}
+	la.chunks = append(la.chunks, chk)
+	la.activeIdx = len(la.chunks) - 1
+
+	mask := uintptr(align - 1)
+	curAddr := chk.base
+	alignedAddr := (curAddr + mask) & ^mask
+	alignedOff := uint64(alignedAddr - chk.base)
+	end := alignedOff + uint64(n)
+	chk.off = end
+	return chk.buf[alignedOff:end]
+}
+
+func (la *LocalArena) Capacity() int {
+	tot := 0
+	for _, c := range la.chunks {
+		tot += len(c.buf)
+	}
+	return tot
+}
+
+func (la *LocalArena) Stats() (used, capacity int) {
+	for _, c := range la.chunks {
+		used += int(c.off)
+		capacity += len(c.buf)
+	}
+	return
+}
+
+func (la *LocalArena) Reset() {
+	for _, chk := range la.chunks {
+		chk.off = 0
+	}
+	la.activeIdx = 0
+}
+
+func (la *LocalArena) Close() error {
+	if la.closed {
+		return nil
+	}
+	la.closed = true
+	runtime.SetFinalizer(la, nil)
+	var firstErr error
+	for _, chk := range la.chunks {
+		if chk.release != nil && len(chk.buf) > 0 {
+			if err := chk.release(chk.buf); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		chk.buf = nil
+	}
+	la.chunks = nil
+	return firstErr
 }
