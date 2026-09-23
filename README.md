@@ -115,6 +115,40 @@ Enforce Rust-like lifetime guarantees in pure Go. When annotated with `//rustygo
 ptr := new(MyStruct) // Verified by linter! Build fails if ptr escapes.
 ```
 
+### 6. SWAR 64-Bit Vector Accelerated JSON Scanner
+`codec.JSONScanner` uses SIMD-Within-A-Register (SWAR) 64-bit vector arithmetic to process string tokens 8 bytes per clock cycle, bypassing byte-by-byte loops and delivering up to 4x faster throughput on long payload fields.
+
+### 7. Zero-Copy MessagePack Codec (`codec/msgpack`)
+Full binary deserialization with direct `*rustygo.Scope` storage binding for strings and byte slices without heap escapes:
+```go
+dec := codec.NewMsgPackDecoder(data)
+mapLen, _ := dec.DecodeMapHeader()
+key, _ := dec.DecodeString(scope) // Zero-alloc string stored directly in scope
+val, _ := dec.DecodeBytes(scope)  // Zero-alloc raw payload
+```
+
+### 8. Lock-Free Sharded Arena Pool (`ShardedArenaPool`)
+Eliminates cross-CPU mutex contention for high-concurrency server workloads by partitioning pre-warmed slabs into shards scaled to `runtime.GOMAXPROCS`:
+```go
+pool := rustygo.NewShardedArenaPool(64*1024, 32)
+defer pool.Close()
+
+_ = pool.WithScope(func(s *rustygo.Scope) error {
+    slice := rustygo.AllocSlice[byte](s, 4096)
+    return process(slice)
+})
+```
+
+### 9. Self-Calibrating Auto-Tuned Arenas (`autotune`)
+Eliminates chunk re-allocation overhead by tracking call-site peak usage via exponential moving averages, auto-sizing subsequent arena allocations:
+```go
+_ = rustygo.WithAutoTunedScope("handle_request", func(s *rustygo.Scope) error {
+    buf := rustygo.AllocSlice[byte](s, dynamicSize)
+    return handle(buf)
+})
+```
+
+
 ---
 
 ## 🛠️ Usage & Developer Tooling

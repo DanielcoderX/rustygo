@@ -1,6 +1,7 @@
 package codec
 
 import (
+	"encoding/binary"
 	"errors"
 	"io"
 	"strconv"
@@ -105,6 +106,19 @@ func (s *JSONScanner) scanString(scope *rg.Scope) (string, error) {
 	s.pos++ // skip opening quote
 	start := s.pos
 	escaped := false
+
+	// SWAR 8-byte fast-path: jump 8 bytes at a time until quote or escape found
+	for s.pos+8 <= len(s.data) {
+		w := binary.LittleEndian.Uint64(s.data[s.pos : s.pos+8])
+		// Check for '"' (0x22) or '\' (0x5c) in word
+		xorQuote := w ^ 0x2222222222222222
+		xorSlash := w ^ 0x5c5c5c5c5c5c5c5c
+		if (((xorQuote-0x0101010101010101)&^xorQuote)&0x8080808080808080) != 0 ||
+			(((xorSlash-0x0101010101010101)&^xorSlash)&0x8080808080808080) != 0 {
+			break
+		}
+		s.pos += 8
+	}
 
 	for s.pos < len(s.data) {
 		b := s.data[s.pos]

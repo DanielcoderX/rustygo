@@ -54,6 +54,30 @@ func TestJSONScanner(t *testing.T) {
 	}
 }
 
+func TestJSONScannerSWARLongString(t *testing.T) {
+	longStr := "this is a very long string that exercises the 8-byte SWAR scanner fast path thoroughly across word boundaries"
+	raw := []byte(`{"long":"` + longStr + `"}`)
+
+	arena := rg.NewArena(4096)
+	defer arena.Close()
+	scope := arena.EnterScope()
+	defer scope.Exit()
+
+	scanner := codec.NewJSONScanner(raw)
+	tok, _, err := scanner.Next(scope)
+	if err != nil || tok != codec.JSONTokenObjectStart {
+		t.Fatalf("expected {, got tok=%v err=%v", tok, err)
+	}
+	tok, k, err := scanner.Next(scope)
+	if err != nil || tok != codec.JSONTokenKey || k != "long" {
+		t.Fatalf("expected key=long, got tok=%v k=%s err=%v", tok, k, err)
+	}
+	tok, v, err := scanner.Next(scope)
+	if err != nil || tok != codec.JSONTokenString || v != longStr {
+		t.Fatalf("expected val=%q, got tok=%v v=%q err=%v", longStr, tok, v, err)
+	}
+}
+
 func BenchmarkJSONStandard(b *testing.B) {
 	raw := []byte(`{"user":"Alice","id":1024,"active":true,"city":"Tehran"}`)
 	type Payload struct {

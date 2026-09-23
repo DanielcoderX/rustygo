@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-binaries:
+    name: Build Binaries (${{ matrix.target.os }}-${{ matrix.target.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - { os: linux, arch: amd64, ext: "" }
+          - { os: linux, arch: arm64, ext: "" }
+          - { os: darwin, arch: amd64, ext: "" }
+          - { os: darwin, arch: arm64, ext: "" }
+          - { os: windows, arch: amd64, ext: ".exe" }
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          check-latest: true
+
+      - name: Build Tool Binaries
+        env:
+          GOOS: ${{ matrix.target.os }}
+          GOARCH: ${{ matrix.target.arch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p dist
+          go build -ldflags="-s -w" -o dist/rustygoc${{ matrix.target.ext }} ./compilerplugin/cmd/rustygoc
+          go build -ldflags="-s -w" -o dist/rustygo-vet${{ matrix.target.ext }} ./cmd/rustygo-vet
+          go build -ldflags="-s -w" -o dist/rustygocheck${{ matrix.target.ext }} ./analyzer/cmd/rustygocheck
+
+      - name: Package Archive
+        id: package
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME}"
+          ARCHIVE_NAME="rustygo_${TAG_NAME}_${{ matrix.target.os }}_${{ matrix.target.arch }}"
+          if [ "${{ matrix.target.os }}" = "windows" ]; then
+            cd dist && zip -9 "../${ARCHIVE_NAME}.zip" * && cd ..
+            echo "asset=${ARCHIVE_NAME}.zip" >> $GITHUB_OUTPUT
+          else
+            cd dist && tar -czvf "../${ARCHIVE_NAME}.tar.gz" * && cd ..
+            echo "asset=${ARCHIVE_NAME}.tar.gz" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.asset }}
+          path: ${{ steps.package.outputs.asset }}
+
+  publish-release:
+    name: Create GitHub Release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate Checksums
+        run: |
+          cd release-assets
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
