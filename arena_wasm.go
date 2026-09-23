@@ -28,3 +28,7 @@ func allocArenaBuffer(size int) ([]byte, func([]byte) error, error) {
 		return nil
 	}, nil
 }
+
+func allocArenaBufferWithGuard(size int) ([]byte, func([]byte) error, error) {
+	return allocArenaBuffer(size)
+}

@@ -64,7 +64,7 @@ func RewriteFileWithConfig(fset *token.FileSet, file *ast.File, files []*ast.Fil
 
 		scopeName := uniqueName(body, "rustygoScope")
 		arenaName := uniqueName(body, "rustygoArena")
-		insertScopeSetup(body, qualifier, arenaName, scopeName, cfg.arenaBytesOrDefault())
+		insertScopeSetup(file, body, qualifier, arenaName, scopeName, cfg.arenaBytesOrDefault())
 
 		if len(bulkSites) >= 2 {
 			hasBulk = true
@@ -140,7 +140,71 @@ func hasIdentName(body *ast.BlockStmt, name string) bool {
 	return found
 }
 
-func insertScopeSetup(body *ast.BlockStmt, qualifier, arenaName, scopeName string, arenaBytes int) {
+func isLoopBody(file *ast.File, body *ast.BlockStmt) bool {
+	isLoop := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch stmt := n.(type) {
+		case *ast.ForStmt:
+			if stmt.Body == body {
+				isLoop = true
+				return false
+			}
+		case *ast.RangeStmt:
+			if stmt.Body == body {
+				isLoop = true
+				return false
+			}
+		}
+		return true
+	})
+	return isLoop
+}
+
+func insertScopeSetup(file *ast.File, body *ast.BlockStmt, qualifier, arenaName, scopeName string, arenaBytes int) {
+	if isLoopBody(file, body) {
+		// Non-deferred scope lifecycle for loop iterations: prevents defer frame accumulation
+		body.List = append([]ast.Stmt{
+			&ast.AssignStmt{
+				Lhs: []ast.Expr{ast.NewIdent(arenaName)},
+				Tok: token.DEFINE,
+				Rhs: []ast.Expr{&ast.CallExpr{
+					Fun:  selectorOrIdent(qualifier, "NewArena"),
+					Args: []ast.Expr{arenaSizeExpr(arenaBytes)},
+				}},
+			},
+			&ast.AssignStmt{
+				Lhs: []ast.Expr{ast.NewIdent(scopeName)},
+				Tok: token.DEFINE,
+				Rhs: []ast.Expr{&ast.CallExpr{
+					Fun: &ast.SelectorExpr{
+						X:   ast.NewIdent(arenaName),
+						Sel: ast.NewIdent("EnterScope"),
+					},
+				}},
+			},
+		}, body.List...)
+
+		body.List = append(body.List,
+			&ast.ExprStmt{
+				X: &ast.CallExpr{
+					Fun: &ast.SelectorExpr{
+						X:   ast.NewIdent(scopeName),
+						Sel: ast.NewIdent("Exit"),
+					},
+				},
+			},
+			&ast.ExprStmt{
+				X: &ast.CallExpr{
+					Fun: &ast.SelectorExpr{
+						X:   ast.NewIdent(arenaName),
+						Sel: ast.NewIdent("Close"),
+					},
+				},
+			},
+		)
+		return
+	}
+
 	body.List = append([]ast.Stmt{
 		&ast.AssignStmt{
 			Lhs: []ast.Expr{ast.NewIdent(arenaName)},

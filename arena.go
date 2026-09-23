@@ -66,8 +66,18 @@ type Arena struct {
 	geometricGrowth bool
 	poisonOnExit    bool
 	poisonPattern   byte
+	guardPages      bool
 	closed          uint32
 }
+
+const (
+	// CacheLineSize is the standard L1 CPU cacheline boundary (64 bytes).
+	CacheLineSize = 64
+	// SIMDAVX2Size is 32-byte alignment for AVX2 vector registers.
+	SIMDAVX2Size = 32
+	// SIMDAVX512Size is 64-byte alignment for AVX-512 vector registers.
+	SIMDAVX512Size = 64
+)
 
 type ArenaOption func(*Arena)
 
@@ -100,6 +110,12 @@ func WithPoisonOnScopeExit(pattern byte) ArenaOption {
 	}
 }
 
+func WithGuardPages(enabled bool) ArenaOption {
+	return func(a *Arena) {
+		a.guardPages = enabled
+	}
+}
+
 var (
 	// ErrInvalidAllocSize is returned when allocation size is <= 0.
 	ErrInvalidAllocSize = errors.New("alloc size must be > 0")
@@ -126,8 +142,15 @@ func parseMark(mark ArenaMark) (chunkIdx int, off uint64) {
 	return int(u >> 32), u & 0xFFFFFFFF
 }
 
-func newChunk(size int) (*chunk, error) {
-	buf, release, err := allocArenaBuffer(size)
+func newChunk(size int, guardPages bool) (*chunk, error) {
+	var buf []byte
+	var release func([]byte) error
+	var err error
+	if guardPages {
+		buf, release, err = allocArenaBufferWithGuard(size)
+	} else {
+		buf, release, err = allocArenaBuffer(size)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +175,7 @@ func NewArena(size int, opts ...ArenaOption) *Arena {
 		}
 	}
 
-	chk, err := newChunk(a.chunkSize)
+	chk, err := newChunk(a.chunkSize, a.guardPages)
 	if err != nil {
 		panic(err.Error())
 	}
@@ -278,7 +301,7 @@ func (a *Arena) allocSlow(n, align int) ([]byte, bool) {
 		}
 	}
 
-	newChk, err := newChunk(newSize)
+	newChk, err := newChunk(newSize, a.guardPages)
 	if err != nil {
 		return nil, false
 	}
@@ -792,6 +815,71 @@ func AllocSliceCap[T any](s *Scope, length, capacity int) []T {
 	return unsafe.Slice((*T)(unsafe.Pointer(&buf[0])), capacity)[:length:capacity]
 }
 
+// AllocCacheAligned allocates storage for a single T aligned to CacheLineSize (64 bytes).
+func AllocCacheAligned[T any](s *Scope) *T {
+	return AllocAlignedValue[T](s, CacheLineSize)
+}
+
+// AllocSliceCacheAligned allocates a slice with length and capacity n aligned to CacheLineSize (64 bytes).
+func AllocSliceCacheAligned[T any](s *Scope, length, capacity int) []T {
+	return AllocSliceAligned[T](s, length, capacity, CacheLineSize)
+}
+
+// AllocAlignedValue allocates storage for a single T with custom alignment.
+func AllocAlignedValue[T any](s *Scope, align int) *T {
+	if !s.Active() {
+		panic("scope is not active")
+	}
+	var zero T
+	t := reflect.TypeOf(zero)
+	if t != nil && HasPointersReflect(t) {
+		return new(T)
+	}
+	size := int(unsafe.Sizeof(zero))
+	if size == 0 {
+		return new(T)
+	}
+	if !isPowerOfTwo(align) {
+		panic("alignment must be power of 2")
+	}
+	naturalAlign := int(unsafe.Alignof(zero))
+	if naturalAlign > align {
+		align = naturalAlign
+	}
+	buf := s.arena.AllocAligned(size, align)
+	atomic.AddUint64(&s.used, uint64(len(buf)))
+	return (*T)(unsafe.Pointer(&buf[0]))
+}
+
+// AllocSliceAligned allocates a slice with custom alignment.
+func AllocSliceAligned[T any](s *Scope, length, capacity, align int) []T {
+	if !s.Active() {
+		panic("scope is not active")
+	}
+	if length < 0 || capacity < length {
+		panic("invalid slice bounds")
+	}
+	var zero T
+	t := reflect.TypeOf(zero)
+	if t != nil && HasPointersReflect(t) {
+		return make([]T, length, capacity)
+	}
+	size := int(unsafe.Sizeof(zero))
+	if size == 0 {
+		return make([]T, length, capacity)
+	}
+	if !isPowerOfTwo(align) {
+		panic("alignment must be power of 2")
+	}
+	naturalAlign := int(unsafe.Alignof(zero))
+	if naturalAlign > align {
+		align = naturalAlign
+	}
+	buf := s.arena.AllocAligned(size*capacity, align)
+	atomic.AddUint64(&s.used, uint64(len(buf)))
+	return unsafe.Slice((*T)(unsafe.Pointer(&buf[0])), capacity)[:length:capacity]
+}
+
 // ----------------- LocalArena (Unsynchronized Fast-Path) -----------------
 
 // LocalArena is a dedicated single-goroutine bump allocator without atomic or mutex overhead.
@@ -807,7 +895,7 @@ func NewLocalArena(size int) *LocalArena {
 	if size <= 0 {
 		panic("arena size must be > 0")
 	}
-	chk, err := newChunk(size)
+	chk, err := newChunk(size, false)
 	if err != nil {
 		panic(err.Error())
 	}
@@ -872,7 +960,7 @@ func (la *LocalArena) growAndAlloc(n, align int) []byte {
 	if n > newSize {
 		newSize = n
 	}
-	chk, err := newChunk(newSize)
+	chk, err := newChunk(newSize, false)
 	if err != nil {
 		panic(err.Error())
 	}
@@ -886,6 +974,10 @@ func (la *LocalArena) growAndAlloc(n, align int) []byte {
 	end := alignedOff + uint64(n)
 	chk.off = end
 	return chk.buf[alignedOff:end]
+}
+
+func (la *LocalArena) AllocCacheAligned(n int) []byte {
+	return la.AllocAligned(n, CacheLineSize)
 }
 
 func (la *LocalArena) Capacity() int {
