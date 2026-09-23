@@ -57,7 +57,8 @@ func allocArenaBuffer(size int) ([]byte, func([]byte) error, error) {
 
 func allocArenaBufferWithGuard(size int) ([]byte, func([]byte) error, error) {
 	const pageSize = 4096
-	total := size + pageSize
+	alignedSize := (size + pageSize - 1) & ^(pageSize - 1)
+	total := alignedSize + pageSize
 	addr, _, err := procVirtualAlloc.Call(
 		0,
 		uintptr(total),
@@ -71,7 +72,7 @@ func allocArenaBufferWithGuard(size int) ([]byte, func([]byte) error, error) {
 		return nil, nil, err
 	}
 
-	guardAddr := addr + uintptr(size)
+	guardAddr := addr + uintptr(alignedSize)
 	var oldProtect uint32
 	ret, _, pErr := procVirtualProtect.Call(
 		guardAddr,

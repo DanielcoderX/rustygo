@@ -23,7 +23,8 @@ func allocArenaBuffer(size int) ([]byte, func([]byte) error, error) {
 
 func allocArenaBufferWithGuard(size int) ([]byte, func([]byte) error, error) {
 	pageSize := syscall.Getpagesize()
-	total := size + pageSize
+	alignedSize := (size + pageSize - 1) & ^(pageSize - 1)
+	total := alignedSize + pageSize
 	buf, err := syscall.Mmap(
 		-1,
 		0,
@@ -34,7 +35,7 @@ func allocArenaBufferWithGuard(size int) ([]byte, func([]byte) error, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := syscall.Mprotect(buf[size:], syscall.PROT_NONE); err != nil {
+	if err := syscall.Mprotect(buf[alignedSize:], syscall.PROT_NONE); err != nil {
 		_ = syscall.Munmap(buf)
 		return nil, nil, err
 	}
