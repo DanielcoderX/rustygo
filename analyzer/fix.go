@@ -82,6 +82,7 @@ func RewriteFileWithConfig(fset *token.FileSet, file *ast.File, files []*ast.Fil
 		astutil.AddImport(fset, file, "unsafe")
 	}
 
+	file.Comments = nil
 	var buf bytes.Buffer
 	if err := format.Node(&buf, fset, file); err != nil {
 		return nil, false, err

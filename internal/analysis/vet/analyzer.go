@@ -12,6 +12,14 @@ import (
 	"rustygo/internal/analysis/pipeline"
 )
 
+var (
+	violationsOnly bool
+)
+
+func init() {
+	Analyzer.Flags.BoolVar(&violationsOnly, "violations-only", false, "only report pragma violations (for CI/CD enforcement)")
+}
+
 var Analyzer = &analysis.Analyzer{
 	Name:       "rustygovet",
 	Doc:        "reports allocation lifetime safety and arena eligibility",
@@ -59,20 +67,22 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		switch dec.Decision {
 		case escape.Arena:
 			if hasPragma {
-				pass.Reportf(dec.Allocation.Instruction.Pos(), "[PRAGMA VERIFIED] Allocation of '%s' adheres to //rustygo:arena scope", dec.Allocation.Type.String())
-			} else {
+				if !violationsOnly {
+					pass.Reportf(dec.Allocation.Instruction.Pos(), "[PRAGMA VERIFIED] Allocation of '%s' adheres to //rustygo:arena scope", dec.Allocation.Type.String())
+				}
+			} else if !violationsOnly {
 				pass.Reportf(dec.Allocation.Instruction.Pos(), "[SAFE] Allocation of '%s' is arena-eligible", dec.Allocation.Type.String())
 			}
 		case escape.Heap:
 			if hasPragma {
 				pass.Reportf(dec.Allocation.Instruction.Pos(), "[PRAGMA VIOLATION] Allocation of '%s' annotated with //rustygo:arena escapes -> Reason: %v", dec.Allocation.Type.String(), reasonString(dec.Reason))
-			} else {
+			} else if !violationsOnly {
 				pass.Reportf(dec.Allocation.Instruction.Pos(), "[UNSAFE] Allocation of '%s' escapes -> Reason: %v", dec.Allocation.Type.String(), reasonString(dec.Reason))
 			}
 		case escape.Unknown:
 			if hasPragma {
 				pass.Reportf(dec.Allocation.Instruction.Pos(), "[PRAGMA VIOLATION] Allocation of '%s' annotated with //rustygo:arena has unproven lifetime", dec.Allocation.Type.String())
-			} else {
+			} else if !violationsOnly {
 				pass.Reportf(dec.Allocation.Instruction.Pos(), "[UNKNOWN] Allocation of '%s' lifetime unproven", dec.Allocation.Type.String())
 			}
 		}
