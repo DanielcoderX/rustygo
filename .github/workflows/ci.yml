@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Go ${{ matrix.go-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
+        go-version: [ '1.24', '1.25' ]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          check-latest: true
+
+      - name: Verify Module Dependencies
+        run: go mod verify
+
+      - name: Build All Packages
+        run: go build ./...
+
+      - name: Run Go Vet
+        run: go vet ./...
+
+      - name: Run Test Suite with Race Detector
+        run: go test -v -count=1 -race ./...
+
+      - name: Run Standalone RustyGo Vet Analysis
+        run: go run ./cmd/rustygo-vet ./...

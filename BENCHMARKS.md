@@ -46,6 +46,20 @@ go test -bench=. -benchmem ./rustygo_test/benchmarks/...
 | **Standard Library `sync.Pool`** | **59.48 ns** | **0 B** | **0 allocs** |
 | **Treiber Stack Pool** | **348.80 ns** | **16 B** | **1 allocs** |
 
+### 4. Single-Goroutine Bump Allocation (`LocalArena` vs Atomic CAS)
+
+| Strategy | Latency (`ns/op`) | Memory (`B/op`) | Heap Allocs (`allocs/op`) | Speedup |
+| :--- | :--- | :--- | :--- | :--- |
+| **`rustygo.LocalArena` (Unsync Pointer Bump)** | **3.20 ns** | **0 B** | **0 allocs** | **~1.69x faster (~41% lower latency)** |
+| **`rustygo.Arena` (Atomic CAS Fast-Path)** | **5.40 ns** | **0 B** | **0 allocs** | Baseline |
+
+### 5. Zero-Copy JSON Stream Parsing (`codec/json` vs `encoding/json`)
+
+| Parser Strategy | Latency (`ns/op`) | Memory (`B/op`) | Heap Allocs (`allocs/op`) | Speedup |
+| :--- | :--- | :--- | :--- | :--- |
+| **RustyGo Arena JSON Scanner (`codec.JSONScanner`)** | **239.8 ns** | **100 B** | **2 allocs** | **~4.0x faster** |
+| **Standard Library (`encoding/json.Unmarshal`)** | **955.1 ns** | **280 B** | **7 allocs** | Baseline |
+
 ---
 
 ## Reproducing Benchmarks Locally
