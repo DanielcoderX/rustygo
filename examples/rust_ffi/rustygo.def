@@ -1,0 +1,7 @@
+LIBRARY rustygo.dll
+EXPORTS
+    rustygo_arena_new
+    rustygo_arena_alloc
+    rustygo_arena_reset
+    rustygo_arena_close
+    rustygo_arena_used_bytes
