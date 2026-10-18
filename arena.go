@@ -185,6 +185,7 @@ func NewArena(size int, opts ...ArenaOption) *Arena {
 	runtime.SetFinalizer(a, func(arena *Arena) {
 		_ = arena.Close()
 	})
+	GlobalMetrics.RecordArenaCreated(a.chunkSize)
 	return a
 }
 
@@ -368,6 +369,7 @@ func (a *Arena) Close() error {
 		return nil
 	}
 	runtime.SetFinalizer(a, nil)
+	GlobalMetrics.RecordArenaClosed(a.chunkSize)
 
 	a.mu.Lock()
 	chunks := a.chunks
@@ -494,6 +496,7 @@ type Scope struct {
 
 // EnterScope returns a new scope. Scope allocations are concurrency-safe.
 func (a *Arena) EnterScope() *Scope {
+	GlobalMetrics.RecordScopeEnter()
 	return &Scope{
 		arena:         a,
 		active:        1,
@@ -569,6 +572,7 @@ func (s *Scope) Exit() {
 	if !atomic.CompareAndSwapUint32(&s.active, 1, 0) {
 		panic("scope already exited")
 	}
+	GlobalMetrics.RecordScopeExit(int(atomic.LoadUint64(&s.used)))
 	for i := len(s.cleanups) - 1; i >= 0; i-- {
 		s.cleanups[i]()
 	}

@@ -148,6 +148,52 @@ _ = rustygo.WithAutoTunedScope("handle_request", func(s *rustygo.Scope) error {
 })
 ```
 
+### 10. Zero-Copy Protobuf Wire Parser (`codec/proto`)
+Low-level wire parser decoding varints, ZigZag integers, and length-delimited sub-messages directly into `*rustygo.Scope`:
+```go
+dec := codec.NewProtoDecoder(data)
+for dec.HasMore() {
+    fieldNum, wireType, _ := dec.NextField()
+    switch fieldNum {
+    case 1: name, _ := dec.DecodeString(scope) // Zero-alloc string stored in scope
+    case 2: payload, _ := dec.DecodeBytes(scope)
+    }
+}
+```
+
+### 11. Arena-Backed Zero-Copy Buffer (`ArenaBuffer`)
+Arena-native alternative to `bytes.Buffer` and `strings.Builder`. All backing memory is allocated from an arena `Scope`, completely bypassing the Go runtime garbage collector:
+```go
+buf := rustygo.NewArenaBuffer(scope, 64)
+buf.WriteString("hello ")
+buf.WriteInt(2026)
+str := buf.String() // Zero-copy string pointing directly to arena memory!
+```
+
+### 12. Prometheus & OpenTelemetry Observability (`metrics`)
+Export real-time memory telemetry and GC-bypass counters to Prometheus collectors:
+```go
+http.Handle("/metrics", rustygo.MetricsHandler())
+```
+
+### 13. Golangci-Lint Integration (`cmd/golangci-lint-rustygo`)
+Run `rustygo-vet` as a standard private plugin directly within `golangci-lint run`:
+```yaml
+# .golangci.yml
+linters-settings:
+  custom:
+    rustygovet:
+      path: path/to/golangci-lint-rustygo.so
+      description: Verifies allocation lifetime safety and arena eligibility
+```
+
+### 14. Live Memory Inspector Dashboard (`/debug/rustygo/arenas`)
+Visual HTML dashboard and JSON API endpoint inspecting live arenas, active scopes, and auto-tuner call-site calibrations:
+```go
+rustygo.RegisterDebugHandler(http.DefaultServeMux)
+```
+
+
 
 ---
 
