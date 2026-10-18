@@ -22,10 +22,19 @@ type BenchResult struct {
 var benchRegex = regexp.MustCompile(`^(Benchmark\S+)\s+(\d+)\s+([\d\.]+)\s+ns/op(?:\s+(\d+)\s+B/op)?(?:\s+(\d+)\s+allocs/op)?`)
 
 func main() {
-	benchTime := flag.String("benchtime", "1s", "Benchmark iteration duration")
-	pkgPath := flag.String("pkg", "./codec", "Package pattern to benchmark")
-	outFile := flag.String("out", "", "Output markdown file path (default stdout)")
-	flag.Parse()
+	args := os.Args[1:]
+	for i, a := range args {
+		if a == "--" {
+			args = args[i+1:]
+			break
+		}
+	}
+
+	fs := flag.NewFlagSet("rustygo-bench", flag.ExitOnError)
+	benchTime := fs.String("benchtime", "1s", "Benchmark iteration duration")
+	pkgPath := fs.String("pkg", "./codec", "Package pattern to benchmark")
+	outFile := fs.String("out", "", "Output markdown file path (default stdout)")
+	_ = fs.Parse(args)
 
 	fmt.Printf("🚀 Running benchmarks for %s (benchtime=%s)...\n", *pkgPath, *benchTime)
 
