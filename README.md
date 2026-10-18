@@ -193,6 +193,37 @@ Visual HTML dashboard and JSON API endpoint inspecting live arenas, active scope
 rustygo.RegisterDebugHandler(http.DefaultServeMux)
 ```
 
+### 15. Zero-Copy HTTP Client Transport (`client`)
+Stream incoming HTTP response bodies directly into an arena `*Scope`, completely bypassing `io.ReadAll` heap allocations:
+```go
+body, resp, err := rustygo.DefaultClient.GetScope(ctx, "https://api.example.com/data", scope)
+```
+
+### 16. Zero-GC Generational LRU Cache (`cache`)
+Store key-value entries in rotating arena generations without triggering Go GC pointer-scanning pauses:
+```go
+cache := rustygo.NewArenaCache(16 * 1024 * 1024) // 16MB per generation
+cache.Set("user:100", payload)
+val, ok := cache.GetScope("user:100", scope) // Zero-alloc copy into scope
+```
+
+### 17. Escape Suppression Pragmas (`//rustygo:trust` & `//rustygo:ignore`)
+Exempt deliberate low-level unsafe pointer operations, Cgo bindings, or FFI boundaries from linter errors:
+```go
+//rustygo:trust
+ptr := (*Node)(unsafe.Pointer(&buf[0])) // Bypasses linter escape report
+```
+
+### 18. Automated Benchmark Matrix CLI (`cmd/rustygo-bench`)
+Generate markdown comparison tables comparing Go standard library vs RustyGo:
+```bash
+go run ./cmd/rustygo-bench -pkg=./codec -benchtime=1s
+```
+
+### 19. WebAssembly & WASI Edge Runtime Support (`arena_wasm.go`)
+Native fallback allocator compiled for `GOOS=js GOARCH=wasm` and `GOOS=wasip1` edge workers.
+
+
 
 
 ---

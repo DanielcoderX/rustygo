@@ -44,16 +44,22 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	pragmas := make(map[string]bool)
+	suppressed := make(map[string]bool)
 	for _, f := range pass.Files {
 		for _, cg := range f.Comments {
 			for _, c := range cg.List {
 				text := strings.TrimSpace(c.Text)
+				pos := pass.Fset.Position(c.Pos())
+				key := fmt.Sprintf("%s:%d", pos.Filename, pos.Line)
+				nextLineKey := fmt.Sprintf("%s:%d", pos.Filename, pos.Line+1)
+
 				if strings.HasPrefix(text, "//rustygo:arena") || strings.HasPrefix(text, "//rustygo:scoped") {
-					pos := pass.Fset.Position(c.Pos())
-					key := fmt.Sprintf("%s:%d", pos.Filename, pos.Line)
 					pragmas[key] = true
-					nextLineKey := fmt.Sprintf("%s:%d", pos.Filename, pos.Line+1)
 					pragmas[nextLineKey] = true
+				}
+				if strings.HasPrefix(text, "//rustygo:trust") || strings.HasPrefix(text, "//rustygo:ignore") {
+					suppressed[key] = true
+					suppressed[nextLineKey] = true
 				}
 			}
 		}
@@ -63,6 +69,14 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		allocPos := pass.Fset.Position(dec.Allocation.Instruction.Pos())
 		key := fmt.Sprintf("%s:%d", allocPos.Filename, allocPos.Line)
 		hasPragma := pragmas[key]
+		isSuppressed := suppressed[key]
+
+		if isSuppressed {
+			if !violationsOnly {
+				pass.Reportf(dec.Allocation.Instruction.Pos(), "[TRUSTED] Allocation of '%s' exempted via pragma", dec.Allocation.Type.String())
+			}
+			continue
+		}
 
 		switch dec.Decision {
 		case escape.Arena:

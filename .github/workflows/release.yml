@@ -41,6 +41,7 @@ jobs:
           go build -ldflags="-s -w" -o dist/rustygoc${{ matrix.target.ext }} ./compilerplugin/cmd/rustygoc
           go build -ldflags="-s -w" -o dist/rustygo-vet${{ matrix.target.ext }} ./cmd/rustygo-vet
           go build -ldflags="-s -w" -o dist/rustygocheck${{ matrix.target.ext }} ./analyzer/cmd/rustygocheck
+          go build -ldflags="-s -w" -o dist/rustygo-bench${{ matrix.target.ext }} ./cmd/rustygo-bench
 
       - name: Package Archive
         id: package
