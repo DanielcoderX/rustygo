@@ -1,8 +1,12 @@
-# RustyGo 🚀
+# RustyGo 🚀 `v1.0.0 GA`
+
+[![CI](https://github.com/DanielcoderX/rustygo/actions/workflows/ci.yml/badge.svg)](https://github.com/DanielcoderX/rustygo/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/badge/release-v1.0.0%20GA-blue.svg)](https://github.com/DanielcoderX/rustygo/releases)
+[![Stability](https://img.shields.io/badge/SemVer-2.0.0-green.svg)](STABILITY.md)
 
 **Zero-cost memory primitives, Static Single Assignment (SSA) lifetime analysis, and transparent compiler integration for Go.**
 
-RustyGo brings determinism and massive memory footprint reductions to Go by abstracting away the Garbage Collector. It proves allocation lifetimes statically using Static Single Assignment (SSA) dataflow verification, automatically routing safe allocations to thread-local arenas while preserving standard heap fallbacks for unsafe memory.
+RustyGo brings determinism and massive memory footprint reductions to Go by abstracting away the Garbage Collector. It proves allocation lifetimes statically using Static Single Assignment (SSA) dataflow verification, automatically routing safe allocations to thread-local arenas while preserving standard heap fallbacks for unsafe memory. Guaranteed 100% backward-compatible under the [SemVer 2.0 Stability Contract](STABILITY.md). Explore the full [Zero-GC Gateway Microservice Showcase](example/gateway).
 
 ---
 

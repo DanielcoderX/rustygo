@@ -1,0 +1,32 @@
+name: Benchmark Regression Tracker
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  benchmark:
+    name: Track Performance & Memory Allocs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          check-latest: true
+
+      - name: Run RustyGo Automated Benchmark Suite
+        run: |
+          go run ./cmd/rustygo-bench -- -pkg=./codec -benchtime=1s -out=BENCHMARK_REPORT.md
+          cat BENCHMARK_REPORT.md
+
+      - name: Upload Benchmark Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report
+          path: BENCHMARK_REPORT.md
