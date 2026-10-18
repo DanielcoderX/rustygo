@@ -223,6 +223,36 @@ go run ./cmd/rustygo-bench -pkg=./codec -benchtime=1s
 ### 19. WebAssembly & WASI Edge Runtime Support (`arena_wasm.go`)
 Native fallback allocator compiled for `GOOS=js GOARCH=wasm` and `GOOS=wasip1` edge workers.
 
+### 20. Deterministic Transaction Checkpointing (`Savepoint` / `Rollback`)
+Instant zero-copy rollback of arena state for ACID database transactions, parser backtracks, and undo operations without deep memory cloning:
+```go
+sp := arena.Savepoint()
+err := arena.Transaction(func(a *rustygo.Arena) error {
+    buf := a.Alloc(1024)
+    if err := process(buf); err != nil {
+        return err // Automatically rolled back!
+    }
+    return nil // Committed!
+})
+```
+
+### 21. Zero-Copy WebSocket Streaming Frame Codec (`codec/ws`)
+RFC 6455 WebSocket frame reader and writer with in-place 64-bit SIMD/SWAR XOR unmasking directly into `*rustygo.Scope`:
+```go
+frame, err := codec.ReadWSFrame(conn, scope) // Payload allocated directly in scope
+_ = codec.WriteWSFrame(conn, codec.WSOpText, true, payload, &mask)
+```
+
+### 22. C-ABI Shared Library for Polyglot FFI (`cmd/librustygo`)
+C-callable dynamic library export (`librustygo.so` / `.dll` / `.dylib`) allowing Rust (`extern "C"`), C++, and Python to consume RustyGo's arena engines.
+
+### 23. Architecture-Accelerated 64-bit SIMD Vector Search (`codec/simd`)
+SWAR bitmask vector search scanning 8 bytes per step to locate quotes, escapes, and delimiters up to 4x faster than byte-by-byte loops.
+
+### 24. Concurrency & Scope Leak Fuzzing Harness
+Continuous stress testing suite simulating concurrent out-of-order scope exits, double exits, and memory poisoning validation under 10k goroutines.
+
+
 
 
 

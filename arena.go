@@ -360,6 +360,17 @@ func (a *Arena) Reset() {
 	}
 }
 
+// UsedBytes returns total bytes allocated across all chunks of the arena.
+func (a *Arena) UsedBytes() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var total int
+	for _, c := range a.chunks {
+		total += int(atomic.LoadUint64(&c.off))
+	}
+	return total
+}
+
 // Close releases the arena backing memory to the operating system.
 func (a *Arena) Close() error {
 	if a == nil {
@@ -510,6 +521,15 @@ func (s *Scope) OnExit(fn func()) {
 	s.cleanups = append(s.cleanups, fn)
 }
 
+func (s *Scope) trackAlloc(buf []byte) {
+	atomic.AddUint64(&s.used, uint64(len(buf)))
+	if s.poisonOnExit {
+		s.poisonMu.Lock()
+		s.allocs = append(s.allocs, buf)
+		s.poisonMu.Unlock()
+	}
+}
+
 // TryAlloc allocates memory through the scope and reports whether it succeeded.
 func (s *Scope) TryAlloc(n int) ([]byte, bool) {
 	if !s.Active() || n <= 0 {
@@ -517,12 +537,7 @@ func (s *Scope) TryAlloc(n int) ([]byte, bool) {
 	}
 	buf, ok := s.arena.TryAlloc(n)
 	if ok {
-		atomic.AddUint64(&s.used, uint64(n))
-		if s.poisonOnExit {
-			s.poisonMu.Lock()
-			s.allocs = append(s.allocs, buf)
-			s.poisonMu.Unlock()
-		}
+		s.trackAlloc(buf)
 	}
 	return buf, ok
 }
@@ -787,7 +802,7 @@ func AllocValue[T any](s *Scope) *T {
 	}
 	align := int(unsafe.Alignof(zero))
 	buf := s.arena.AllocAligned(size, align)
-	atomic.AddUint64(&s.used, uint64(len(buf)))
+	s.trackAlloc(buf)
 	return (*T)(unsafe.Pointer(&buf[0]))
 }
 
@@ -815,7 +830,7 @@ func AllocSliceCap[T any](s *Scope, length, capacity int) []T {
 	}
 	align := int(unsafe.Alignof(zero))
 	buf := s.arena.AllocAligned(size*capacity, align)
-	atomic.AddUint64(&s.used, uint64(len(buf)))
+	s.trackAlloc(buf)
 	return unsafe.Slice((*T)(unsafe.Pointer(&buf[0])), capacity)[:length:capacity]
 }
 
@@ -851,7 +866,7 @@ func AllocAlignedValue[T any](s *Scope, align int) *T {
 		align = naturalAlign
 	}
 	buf := s.arena.AllocAligned(size, align)
-	atomic.AddUint64(&s.used, uint64(len(buf)))
+	s.trackAlloc(buf)
 	return (*T)(unsafe.Pointer(&buf[0]))
 }
 
@@ -880,7 +895,7 @@ func AllocSliceAligned[T any](s *Scope, length, capacity, align int) []T {
 		align = naturalAlign
 	}
 	buf := s.arena.AllocAligned(size*capacity, align)
-	atomic.AddUint64(&s.used, uint64(len(buf)))
+	s.trackAlloc(buf)
 	return unsafe.Slice((*T)(unsafe.Pointer(&buf[0])), capacity)[:length:capacity]
 }
 
