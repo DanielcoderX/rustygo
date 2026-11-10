@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	rg "rustygo"
-	"rustygo/codec"
+	rg "github.com/DanielcoderX/rustygo"
+	"github.com/DanielcoderX/rustygo/codec"
 )
 
 func TestMsgPackRoundtrip(t *testing.T) {

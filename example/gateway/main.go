@@ -6,8 +6,8 @@ import (
 	"log"
 	"net/http"
 
-	rg "rustygo"
-	"rustygo/codec"
+	rg "github.com/DanielcoderX/rustygo"
+	"github.com/DanielcoderX/rustygo/codec"
 )
 
 // GatewayServer coordinates zero-copy API gateway routing.

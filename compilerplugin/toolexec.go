@@ -11,9 +11,9 @@ import (
 	"strings"
 	"sync"
 
-	"rustygo/analyzer"
-	"rustygo/internal/analysis/escape"
-	"rustygo/internal/analysis/pipeline"
+	"github.com/DanielcoderX/rustygo/analyzer"
+	"github.com/DanielcoderX/rustygo/internal/analysis/escape"
+	"github.com/DanielcoderX/rustygo/internal/analysis/pipeline"
 
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"

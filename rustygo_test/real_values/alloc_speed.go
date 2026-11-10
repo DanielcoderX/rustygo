@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	. "rustygo"
+	. "github.com/DanielcoderX/rustygo"
 	"sync"
 	"time"
 	"unsafe"

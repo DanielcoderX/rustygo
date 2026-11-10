@@ -3,7 +3,7 @@ package rustygo_test
 import (
 	"errors"
 	"reflect"
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 	"strings"
 	"sync"
 	"testing"

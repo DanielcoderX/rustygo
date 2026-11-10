@@ -6,7 +6,7 @@ import (
 	"io"
 	"unsafe"
 
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 )
 
 // WireType represents a Protobuf wire encoding type.

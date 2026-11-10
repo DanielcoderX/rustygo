@@ -2,7 +2,7 @@ package rustygo_test
 
 import (
 	"fmt"
-	. "rustygo"
+	. "github.com/DanielcoderX/rustygo"
 	"sync"
 	"testing"
 	"unsafe"

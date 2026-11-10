@@ -8,7 +8,7 @@ import (
 	"time"
 	"unsafe"
 
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 )
 
 // -----------------------------

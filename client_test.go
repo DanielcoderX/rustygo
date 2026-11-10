@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 )
 
 func TestReadResponseBodyZeroCopy(t *testing.T) {

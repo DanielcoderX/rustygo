@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 )
 
 func TestArenaCacheBasicAndRotation(t *testing.T) {

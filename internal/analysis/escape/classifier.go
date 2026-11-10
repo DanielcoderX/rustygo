@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"go/types"
 
-	"rustygo/internal/analysis/allocation"
-	"rustygo/internal/analysis/lifetime"
+	"github.com/DanielcoderX/rustygo/internal/analysis/allocation"
+	"github.com/DanielcoderX/rustygo/internal/analysis/lifetime"
 )
 
 func allocatedElemType(t types.Type) types.Type {

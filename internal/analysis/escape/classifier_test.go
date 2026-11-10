@@ -10,8 +10,8 @@ import (
 
 	"golang.org/x/tools/go/ssa"
 
-	"rustygo/internal/analysis/allocation"
-	"rustygo/internal/analysis/lifetime"
+	"github.com/DanielcoderX/rustygo/internal/analysis/allocation"
+	"github.com/DanielcoderX/rustygo/internal/analysis/lifetime"
 )
 
 func buildSSA(src string) (*ssa.Package, error) {

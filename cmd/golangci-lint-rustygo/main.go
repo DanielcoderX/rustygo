@@ -4,7 +4,7 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/singlechecker"
 
-	"rustygo/internal/analysis/vet"
+	"github.com/DanielcoderX/rustygo/internal/analysis/vet"
 )
 
 // New provides the standard plugin constructor required by golangci-lint private linters.

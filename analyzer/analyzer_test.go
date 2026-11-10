@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"rustygo/analyzer"
+	"github.com/DanielcoderX/rustygo/analyzer"
 
 	"golang.org/x/tools/go/analysis/analysistest"
 	"golang.org/x/tools/go/packages"
@@ -39,7 +39,7 @@ func TestRewriteFile(t *testing.T) {
 
 	got := string(out)
 	for _, want := range []string{
-		`rg "rustygo"`,
+		`rg "github.com/DanielcoderX/rustygo"`,
 		`"unsafe"`,
 		`rustygoArena := rg.NewArena(`,
 		`65536`,

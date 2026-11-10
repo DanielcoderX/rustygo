@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/tools/go/ssa"
 
-	"rustygo/internal/analysis/pipeline"
+	"github.com/DanielcoderX/rustygo/internal/analysis/pipeline"
 )
 
 func buildSSAAndAST(src string) (*token.FileSet, *ast.File, []*ast.File, *types.Info, *ssa.Program, error) {

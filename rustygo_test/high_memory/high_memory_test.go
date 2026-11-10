@@ -3,7 +3,7 @@ package rustygo_test
 import (
 	"fmt"
 	"math/rand"
-	. "rustygo"
+	. "github.com/DanielcoderX/rustygo"
 	"sync"
 	"testing"
 	"unsafe"

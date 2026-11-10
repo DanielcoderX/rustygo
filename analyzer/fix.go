@@ -98,12 +98,12 @@ func (cfg RewriteConfig) arenaBytesOrDefault() int {
 }
 
 func rewriteQualifier(fset *token.FileSet, file *ast.File, pkgPath string) string {
-	if pkgPath == "rustygo" {
+	if pkgPath == "rustygo" || pkgPath == "github.com/DanielcoderX/rustygo" {
 		return ""
 	}
 	for _, imp := range file.Imports {
 		path, err := strconv.Unquote(imp.Path.Value)
-		if err != nil || path != "rustygo" {
+		if err != nil || (path != "rustygo" && path != "github.com/DanielcoderX/rustygo") {
 			continue
 		}
 		if imp.Name != nil {
@@ -112,9 +112,9 @@ func rewriteQualifier(fset *token.FileSet, file *ast.File, pkgPath string) strin
 			}
 			return imp.Name.Name
 		}
-		return "rustygo"
+		return "github.com/DanielcoderX/rustygo"
 	}
-	astutil.AddNamedImport(fset, file, "rg", "rustygo")
+	astutil.AddNamedImport(fset, file, "rg", "github.com/DanielcoderX/rustygo")
 	return "rg"
 }
 

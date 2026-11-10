@@ -5,7 +5,7 @@ import (
 
 	"golang.org/x/tools/go/ssa"
 
-	"rustygo/internal/analysis/summary"
+	"github.com/DanielcoderX/rustygo/internal/analysis/summary"
 )
 
 // CheckEscape traverses the lifetime graph from an allocation node to detect escapes.

@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/tools/go/ssa"
 
-	"rustygo/internal/analysis/summary"
+	"github.com/DanielcoderX/rustygo/internal/analysis/summary"
 )
 
 func buildSSA(src string) (*ssa.Package, error) {

@@ -6,7 +6,7 @@ import (
 	"os"
 	"os/exec"
 
-	"rustygo/compilerplugin"
+	"github.com/DanielcoderX/rustygo/compilerplugin"
 )
 
 func main() {

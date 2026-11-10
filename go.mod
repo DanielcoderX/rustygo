@@ -1,4 +1,4 @@
-module rustygo
+module github.com/DanielcoderX/rustygo
 
 go 1.25.0
 

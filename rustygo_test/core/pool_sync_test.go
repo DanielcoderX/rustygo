@@ -3,7 +3,7 @@ package rustygo_test
 import (
 	"testing"
 
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 )
 
 func TestSyncPoolWrapper(t *testing.T) {

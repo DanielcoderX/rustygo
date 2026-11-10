@@ -3,10 +3,10 @@ package pipeline
 import (
 	"golang.org/x/tools/go/ssa"
 
-	"rustygo/internal/analysis/allocation"
-	"rustygo/internal/analysis/escape"
-	"rustygo/internal/analysis/lifetime"
-	"rustygo/internal/analysis/summary"
+	"github.com/DanielcoderX/rustygo/internal/analysis/allocation"
+	"github.com/DanielcoderX/rustygo/internal/analysis/escape"
+	"github.com/DanielcoderX/rustygo/internal/analysis/lifetime"
+	"github.com/DanielcoderX/rustygo/internal/analysis/summary"
 )
 
 // AnalysisResult holds the compiled findings from the complete analysis pipeline.

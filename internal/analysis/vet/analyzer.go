@@ -8,8 +8,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 
-	"rustygo/internal/analysis/escape"
-	"rustygo/internal/analysis/pipeline"
+	"github.com/DanielcoderX/rustygo/internal/analysis/escape"
+	"github.com/DanielcoderX/rustygo/internal/analysis/pipeline"
 )
 
 var (

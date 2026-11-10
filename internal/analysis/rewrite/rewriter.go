@@ -5,8 +5,8 @@ import (
 	"go/token"
 	"go/types"
 
-	"rustygo/analyzer"
-	"rustygo/internal/analysis/escape"
+	"github.com/DanielcoderX/rustygo/analyzer"
+	"github.com/DanielcoderX/rustygo/internal/analysis/escape"
 )
 
 // Rewrite applies arena allocation transformations to an AST file based on pipeline decisions.

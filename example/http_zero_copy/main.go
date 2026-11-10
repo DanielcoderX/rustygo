@@ -5,8 +5,8 @@ import (
 	"io"
 	"net/http"
 
-	rg "rustygo"
-	"rustygo/codec"
+	rg "github.com/DanielcoderX/rustygo"
+	"github.com/DanielcoderX/rustygo/codec"
 )
 
 func UserHandler(w http.ResponseWriter, r *http.Request) {

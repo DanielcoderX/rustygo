@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 )
 
 func TestShardedArenaPoolConcurrency(t *testing.T) {

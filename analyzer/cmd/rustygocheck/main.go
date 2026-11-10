@@ -8,7 +8,7 @@ import (
 	"go/ast"
 	"os"
 
-	"rustygo/analyzer"
+	"github.com/DanielcoderX/rustygo/analyzer"
 
 	"golang.org/x/tools/go/analysis/singlechecker"
 	"golang.org/x/tools/go/packages"

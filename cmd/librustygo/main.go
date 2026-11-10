@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 )
 
 var (

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 )
 
 type WSOpcode byte

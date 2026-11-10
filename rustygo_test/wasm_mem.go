@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"rustygo/analyzer"
+	"github.com/DanielcoderX/rustygo/analyzer"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -261,7 +261,7 @@ func main() {
 
 import (
 	"fmt"
-	_ "rustygo"
+	_ "github.com/DanielcoderX/rustygo"
 )
 
 type Element struct {

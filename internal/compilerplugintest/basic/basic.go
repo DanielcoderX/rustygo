@@ -1,6 +1,6 @@
 package basic
 
-import _ "rustygo"
+import _ "github.com/DanielcoderX/rustygo"
 
 type Node struct {
 	Value int

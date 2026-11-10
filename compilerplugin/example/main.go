@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"time"
 
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 )
 
 var _ = rg.NewArena

@@ -1,7 +1,7 @@
 package escape
 
 import (
-	"rustygo/internal/analysis/allocation"
+	"github.com/DanielcoderX/rustygo/internal/analysis/allocation"
 )
 
 // Decision specifies where the allocation should reside.

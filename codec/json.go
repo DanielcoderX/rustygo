@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"unsafe"
 
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 )
 
 type JSONTokenType int

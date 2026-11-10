@@ -5,8 +5,8 @@ import (
 	"io"
 	"testing"
 
-	rg "rustygo"
-	"rustygo/codec"
+	rg "github.com/DanielcoderX/rustygo"
+	"github.com/DanielcoderX/rustygo/codec"
 )
 
 func TestJSONScanner(t *testing.T) {

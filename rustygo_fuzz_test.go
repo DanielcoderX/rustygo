@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 )
 
 func TestFuzzConcurrentScopeLifecycle(t *testing.T) {

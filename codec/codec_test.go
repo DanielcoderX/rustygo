@@ -5,8 +5,8 @@ import (
 	"encoding/binary"
 	"testing"
 
-	rg "rustygo"
-	"rustygo/codec"
+	rg "github.com/DanielcoderX/rustygo"
+	"github.com/DanielcoderX/rustygo/codec"
 )
 
 func TestCodecReaderBytesAndString(t *testing.T) {

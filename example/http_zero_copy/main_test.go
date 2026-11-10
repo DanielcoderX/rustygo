@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 )
 
 func TestUserHandler(t *testing.T) {

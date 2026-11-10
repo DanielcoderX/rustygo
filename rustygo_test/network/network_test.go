@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 )
 
 // ---------------------------------------------------

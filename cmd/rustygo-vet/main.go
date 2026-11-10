@@ -3,7 +3,7 @@ package main
 import (
 	"golang.org/x/tools/go/analysis/singlechecker"
 
-	"rustygo/internal/analysis/vet"
+	"github.com/DanielcoderX/rustygo/internal/analysis/vet"
 )
 
 func main() {

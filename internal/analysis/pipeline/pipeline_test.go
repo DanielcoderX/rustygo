@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/tools/go/ssa"
 
-	"rustygo/internal/analysis/escape"
+	"github.com/DanielcoderX/rustygo/internal/analysis/escape"
 )
 
 func buildSSA(src string) (*ssa.Package, error) {

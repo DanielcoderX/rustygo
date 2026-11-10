@@ -2,7 +2,7 @@ package rustygo_test
 
 import (
 	"bytes"
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 	"testing"
 )
 

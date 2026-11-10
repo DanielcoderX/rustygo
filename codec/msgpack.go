@@ -7,7 +7,7 @@ import (
 	"math"
 	"unsafe"
 
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 )
 
 var (

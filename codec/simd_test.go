@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"rustygo/codec"
+	"github.com/DanielcoderX/rustygo/codec"
 )
 
 func TestFindQuoteOrEscape(t *testing.T) {

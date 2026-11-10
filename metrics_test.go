@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 )
 
 func TestMetricsTrackingAndPrometheus(t *testing.T) {

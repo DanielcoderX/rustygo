@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	rg "rustygo"
-	"rustygo/codec"
+	rg "github.com/DanielcoderX/rustygo"
+	"github.com/DanielcoderX/rustygo/codec"
 )
 
 func TestWSFrameMaskedTextRoundtrip(t *testing.T) {

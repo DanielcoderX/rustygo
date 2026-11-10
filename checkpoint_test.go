@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 )
 
 func TestArenaSavepointAndRollback(t *testing.T) {

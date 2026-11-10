@@ -16,8 +16,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/ssa"
 
-	"rustygo/internal/analysis/escape"
-	"rustygo/internal/analysis/pipeline"
+	"github.com/DanielcoderX/rustygo/internal/analysis/escape"
+	"github.com/DanielcoderX/rustygo/internal/analysis/pipeline"
 )
 
 var Analyzer = &analysis.Analyzer{

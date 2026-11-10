@@ -1,7 +1,7 @@
 package rustygo_test
 
 import (
-	rg "rustygo"
+	rg "github.com/DanielcoderX/rustygo"
 	"sync"
 	"testing"
 )
